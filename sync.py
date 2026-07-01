@@ -157,7 +157,8 @@ def scrape_kworb(country_code):
             break
             
         cells = rows[r_idx].find_all("td")
-        if len(cells) < 5:
+        required_cols = max(col_pos, col_change, col_track, col_days, col_peak, col_streams) + 1
+        if len(cells) < required_cols:
             continue
             
         try:
@@ -442,11 +443,28 @@ def main():
     for i in range(0, len(new_video_ids), chunk_size):
         chunk = new_video_ids[i:i + chunk_size]
         print(f"Adding tracks {i+1} to {min(i + chunk_size, len(new_video_ids))}...")
-        res = yt.add_playlist_items(playlist_id, chunk)
-        status = res.get('status') if isinstance(res, dict) else res
-        if status == 'STATUS_FAILED':
-            print(f"❌ Error: Failed to add chunk {i+1} to {min(i + chunk_size, len(new_video_ids))} to playlist. Response: {res}")
-            sys.exit(1)
+        
+        # Retry up to 3 times on transient failures
+        for attempt in range(3):
+            try:
+                res = yt.add_playlist_items(playlist_id, chunk)
+                status = res.get('status') if isinstance(res, dict) else res
+                if status == 'STATUS_FAILED':
+                    if attempt < 2:
+                        print(f"  ⚠ Chunk upload failed with STATUS_FAILED, retrying (attempt {attempt + 2}/3)...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        print(f"❌ Error: Failed to add chunk {i+1} to {min(i + chunk_size, len(new_video_ids))} to playlist. Response: {res}")
+                        sys.exit(1)
+                break  # Success
+            except Exception as e:
+                if attempt < 2:
+                    print(f"  ⚠ Chunk upload exception: {e}, retrying (attempt {attempt + 2}/3)...")
+                    time.sleep(2)
+                else:
+                    print(f"❌ Error: Failed to add chunk {i+1} to {min(i + chunk_size, len(new_video_ids))} due to exception: {e}")
+                    sys.exit(1)
     print("Tracks added successfully.")
     
     # Update description to match the new Week Date
