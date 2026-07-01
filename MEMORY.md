@@ -11,6 +11,7 @@ ytmusic-sync/
 ├── data/              # Cached country charts and resolved ytMusicId entries
 ├── auth.py            # Interactive script to set up browser authentication credentials
 ├── sync.py            # Standalone scraping and playlist synchronization script
+├── test_sync.py       # Offline unit tests for sync.py functions
 ├── requirements.txt   # Project dependencies (ytmusicapi, requests, beautifulsoup4)
 ├── browser.json       # Generated browser credentials (must be kept out of version control)
 └── README.md          # User setup and execution documentation
