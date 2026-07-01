@@ -10,15 +10,18 @@ ytmusic-sync/
 │       └── sync.yml   # GitHub Actions workflow for scheduled daily sync using uv
 ├── data/              # Cached country charts and resolved ytMusicId entries
 ├── auth.py            # Interactive script to set up browser authentication credentials
-├── sync.py            # Standalone scraping and playlist synchronization script
-├── test_sync.py       # Offline unit tests for sync.py functions
+├── utils.py           # Common constants and shared generic utilities
+├── scraper.py         # Parsing and HTML scraping logic for Kworb weekly charts
+├── playlist_sync.py   # YouTube Music library operations and cache checks
+├── sync.py            # Orchestrator and entry point CLI script
+├── test_sync.py       # Offline unit tests for utility and parsing logic
 ├── requirements.txt   # Project dependencies (ytmusicapi, requests, beautifulsoup4)
 ├── browser.json       # Generated browser credentials (must be kept out of version control)
 └── README.md          # User setup and execution documentation
 
 ## Conventions
 - Use `uv` for python dependency management.
-- Rebuild playlists by removing all existing tracks and adding the newly scraped track IDs.
+- Sync playlists using the safe add-then-remove flow to avoid empty-playlist states, keeping sequential resolution for cache safety.
 
 ## Dependencies & Setup
 - `ytmusicapi>=1.12.1`
@@ -34,3 +37,4 @@ ytmusic-sync/
 ## Blunders
 - [2026-07-01] YouTube Music search and library endpoints fail with 400 Bad Request when authenticated with OAuth client credentials. → YouTube changed backend APIs breaking OAuth clients in ytmusicapi. → Fixed by switching automated synchronization to use Browser Cookie authentication (`browser.json`) instead of OAuth, and routing searches through the authenticated client to avoid unauthenticated rate-limiting.
 - [2026-07-01] YTM API `add_playlist_items` returns `STATUS_FAILED` and rejects the entire 50-track chunk if the list contains any duplicate video IDs. → Fixed by stable-deduplicating track IDs in `sync.py` before batching and uploading.
+- [2026-07-01] Monolithic sync script contains critical sync cache race bugs and search result mismatch loops. → Fixed by restructuring main to add-then-remove, validating search similarity with difflib, and modularizing functions into utils.py, scraper.py, playlist_sync.py.

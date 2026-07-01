@@ -5,15 +5,9 @@ import tempfile
 import json
 import sys
 
-# Import functions from sync.py
-from sync import (
-    clean_string,
-    verify_match,
-    retry_operation,
-    should_skip_sync,
-    parse_kworb_html,
-    parse_num
-)
+from utils import clean_string, verify_match, retry_operation
+from playlist_sync import should_skip_sync
+from scraper import parse_kworb_html
 
 class TestSyncBot(unittest.TestCase):
 
