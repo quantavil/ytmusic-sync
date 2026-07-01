@@ -335,8 +335,8 @@ class TestSyncBot(unittest.TestCase):
         
         # Verify add_playlist_items is called twice (chunk size 50)
         self.assertEqual(yt.add_playlist_items.call_count, 2)
-        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[:50])
-        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[50:])
+        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[:50], duplicates=True)
+        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[50:], duplicates=True)
         
         # Verify remove_playlist_items is called with current tracks
         yt.remove_playlist_items.assert_called_once_with(
@@ -356,6 +356,8 @@ class TestSyncBot(unittest.TestCase):
         
         with self.assertRaises(SystemExit):
             sync_playlist(yt, "pl_123", [], ["new_1"], "desc")
+        self.assertEqual(yt.add_playlist_items.call_count, 3)
+        yt.add_playlist_items.assert_any_call("pl_123", ["new_1"], duplicates=True)
 
 if __name__ == "__main__":
     unittest.main()

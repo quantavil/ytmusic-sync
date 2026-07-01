@@ -187,7 +187,7 @@ def sync_playlist(yt, playlist_id, current_tracks, new_video_ids, target_descrip
         print(f"Adding tracks {i+1} to {min(i + chunk_size, len(new_video_ids))}...")
         
         def upload_chunk():
-            res = yt.add_playlist_items(playlist_id, chunk)
+            res = yt.add_playlist_items(playlist_id, chunk, duplicates=True)
             status = res.get('status') if isinstance(res, dict) else res
             if status == 'STATUS_FAILED':
                 raise RuntimeError(f"STATUS_FAILED: {res}")
