@@ -59,24 +59,18 @@ def extract_week_date(soup):
         sources.append(pagetitle_span.get_text())
     if soup.title:
         sources.append(soup.title.get_text())
-    for tag in ["h1", "h2", "h3"]:
-        for el in soup.find_all(tag):
-            sources.append(el.get_text())
-            
+    
     for s in sources:
-        # Check for YYYY-MM-DD or YYYY/MM/DD
         m = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})", s)
         if m:
             return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-        # Check for Month DD, YYYY
-        m2 = re.search(r"(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})", s)
+        m2 = re.search(r"([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})", s)
         if m2:
             try:
                 date_str = f"{m2.group(1)} {m2.group(2)} {m2.group(3)}".replace(",", "")
                 for fmt in ("%B %d %Y", "%b %d %Y"):
                     try:
-                        dt = datetime.strptime(date_str, fmt)
-                        return dt.strftime("%Y-%m-%d")
+                        return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
                     except ValueError:
                         continue
             except Exception:
@@ -176,25 +170,22 @@ def scrape_kworb(country_code):
         title = ""
         spotify_id = ""
         
+        href = ""
         if len(a_tags) >= 2:
             artist = a_tags[0].get_text(strip=True)
             title = a_tags[1].get_text(strip=True)
             href = a_tags[1].get("href", "")
-            match = re.search(r"track/([a-zA-Z0-9]+)\.html", href)
-            if match:
-                spotify_id = match.group(1)
         elif len(a_tags) == 1:
             title = a_tags[0].get_text(strip=True)
             href = a_tags[0].get("href", "")
+        else:
+            track_text = track_cell.get_text(strip=True)
+            artist, title = track_text.split(" - ", 1) if " - " in track_text else ("", track_text)
+
+        if href:
             match = re.search(r"track/([a-zA-Z0-9]+)\.html", href)
             if match:
                 spotify_id = match.group(1)
-        else:
-            track_text = track_cell.get_text(strip=True)
-            if " - " in track_text:
-                artist, title = track_text.split(" - ", 1)
-            else:
-                title = track_text
                 
 
         streams = parse_num(cells[col_streams].get_text(strip=True))
@@ -386,7 +377,7 @@ def main():
 
     # 4. Find or Create Playlist
     target_title = f"Spotify Weekly {country_name} Top 200"
-    target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotifx bot."
+    target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
     
     print(f"Searching for existing playlist: '{target_title}'...")
     playlists = yt.get_library_playlists(limit=None)
