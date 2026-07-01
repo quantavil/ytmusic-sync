@@ -104,6 +104,13 @@ class TestSyncBot(unittest.TestCase):
         }
         self.assertTrue(verify_match("Michael Jackson", "Smooth Criminal - 2012 Remaster", res_remaster))
 
+        # Case 9: Artist in result title (video fallback)
+        res_video = {
+            "title": "One Dance - Drake (Official Audio)",
+            "artists": [{"name": "Dymnd"}] # Channel name instead of artist
+        }
+        self.assertTrue(verify_match("Drake", "One Dance", res_video))
+
     def test_retry_operation_success(self):
         call_count = 0
         def dummy_func():

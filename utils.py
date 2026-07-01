@@ -53,12 +53,11 @@ def clean_title(title):
     title = re.sub(r"\s*[([{-]\s*(?:feat|featuring|ft|with|prod)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
     title = re.sub(r"\b(?:feat|featuring|ft|with|prod)\b.*", "", title, flags=re.IGNORECASE)
     
-    # 2. Strip remaster / version / edit in parentheses/brackets: (remastered), (radio edit), etc.
-    # Allow leading words like "Radio", "Acoustic"
-    title = re.sub(r"\s*[([{-]\s*(?:.*?\s+)?(?:remaster|remastered|mix|edit|version|ver|explicit|clean|cover|bonus track|from\s+.*)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
+    # 2. Strip remaster / version / edit in parentheses/brackets: (remastered), (radio edit), (official audio), etc.
+    title = re.sub(r"\s*[([{]\s*(?:.*?\s+)?(?:remaster|remastered|mix|edit|version|ver|explicit|clean|cover|bonus track|from\s+.*|audio|video|music\s+video|lyric|lyrics|official)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
     
-    # 3. Strip hyphenated/slashed suffixes: - Single Version, - 2012 Remaster, / Live
-    title = re.sub(r"\s*[-|/]\s*(?:.*?\s+)?(?:remaster|remastered|mix|edit|version|ver|explicit|clean|cover|bonus track|single|album|radio|live)\b.*", "", title, flags=re.IGNORECASE)
+    # 3. Strip hyphenated/slashed suffixes: - Single Version, - 2012 Remaster, / Live, - Official Audio
+    title = re.sub(r"\s*[-|/]\s*(?:.*?\s+)?(?:remaster|remastered|mix|edit|version|ver|explicit|clean|cover|bonus track|single|album|radio|live|audio|video|music\s+video|lyric|lyrics|official)\b.*", "", title, flags=re.IGNORECASE)
     
     return clean_string(title)
 
@@ -94,6 +93,14 @@ def verify_match(target_artist, target_title, result, threshold=0.80):
             if difflib.SequenceMatcher(None, clean_target_art, clean_ra).ratio() > 0.7:
                 artist_matched = True
                 break
+                
+        # Fallback: if artist doesn't match uploader/artists but is present in the video title
+        if not artist_matched and clean_target_art:
+            if clean_target_art in clean_res_title:
+                artist_matched = True
+                # Strip the artist name from the result title and recalculate similarity ratio
+                stripped_res_title = clean_string(clean_res_title.replace(clean_target_art, ""))
+                title_ratio = difflib.SequenceMatcher(None, clean_target_title, stripped_res_title).ratio()
                 
     # Accept if title is highly similar and artist matches
     if title_ratio >= threshold and artist_matched:
