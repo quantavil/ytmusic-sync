@@ -28,8 +28,7 @@ ytmusic-sync/
 - YouTube's OAuth implementation for `ytmusicapi` is currently experiencing a backend issue (Issue #813) returning `400 Bad Request` on authenticated endpoints. Browser headers (`browser.json`) is the recommended working authentication method.
 
 ## Insights
-- Public operations (like `search`) do not require authentication and can be performed using an unauthenticated `YTMusic()` instance to bypass OAuth-related 400 Bad Request errors.
 - Cache loaded from existing JSONs in `data/` prevents duplicate YouTube Music searches and speeds up subsequent runs.
 
 ## Blunders
-- [2026-07-01] YouTube Music search and library endpoints fail with 400 Bad Request when authenticated with OAuth client credentials. → YouTube changed backend APIs breaking OAuth clients in ytmusicapi. → Fixed by routing searches through a separate unauthenticated `YTMusic()` instance, and switching automated synchronization to use Browser Cookie authentication (`browser.json`) instead of OAuth.
+- [2026-07-01] YouTube Music search and library endpoints fail with 400 Bad Request when authenticated with OAuth client credentials. → YouTube changed backend APIs breaking OAuth clients in ytmusicapi. → Fixed by switching automated synchronization to use Browser Cookie authentication (`browser.json`) instead of OAuth, and routing searches through the authenticated client to avoid unauthenticated rate-limiting.

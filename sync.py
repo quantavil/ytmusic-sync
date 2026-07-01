@@ -50,6 +50,9 @@ def parse_args():
 
 def extract_week_date(soup):
     sources = []
+    pagetitle_span = soup.find("span", class_="pagetitle")
+    if pagetitle_span:
+        sources.append(pagetitle_span.get_text())
     if soup.title:
         sources.append(soup.title.get_text())
     for tag in ["h1", "h2", "h3"]:
@@ -57,10 +60,10 @@ def extract_week_date(soup):
             sources.append(el.get_text())
             
     for s in sources:
-        # Check for YYYY-MM-DD
-        m = re.search(r"(\d{4}-\d{2}-\d{2})", s)
+        # Check for YYYY-MM-DD or YYYY/MM/DD
+        m = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})", s)
         if m:
-            return m.group(1)
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
         # Check for Month DD, YYYY
         m2 = re.search(r"(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})", s)
         if m2:
@@ -292,9 +295,6 @@ def main():
     else:
         yt = YTMusic(auth_file)
         
-    # Use a separate public instance for searching to bypass OAuth search limitations/bugs
-    yt_public = YTMusic()
-        
     # 3. Load cache and enrich tracks with YouTube Music IDs
     cache_by_id, cache_by_name = load_ytmusic_cache(args.data_dir)
     print(f"Loaded cache from existing JSONs: {len(cache_by_id)} unique IDs, {len(cache_by_name)} name pairs.")
@@ -325,7 +325,7 @@ def main():
                     # Delay to prevent rate limiting
                     time.sleep(random.uniform(0.3, 0.8))
                     
-                    search_results = yt_public.search(query, filter="songs")
+                    search_results = yt.search(query, filter="songs")
                     if search_results:
                         yt_id = search_results[0].get("videoId")
                         if yt_id:
@@ -346,14 +346,6 @@ def main():
                     
     print(f"YTMusic Enrichment: {resolved_count} resolved via search, {cached_count} resolved via cache.")
     
-    # Save the updated chart data with resolved IDs to file
-    data_path = Path(args.data_dir)
-    data_path.mkdir(parents=True, exist_ok=True)
-    out_file = data_path / f"{args.country}.json"
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(chart, f, indent=2, ensure_ascii=False)
-    print(f"Saved updated data to {out_file}")
-    
     new_video_ids = [t["ytMusicId"] for t in tracks if t.get("ytMusicId")]
     print(f"Found {len(new_video_ids)} resolved YouTube Music track IDs out of {len(tracks)} tracks.")
     
@@ -363,17 +355,26 @@ def main():
 
     if args.dry_run:
         print("\n--- DRY RUN ACTIVE ---")
-        print(f"Would sync to playlist for: Spotify Weekly {country_name} Top {len(new_video_ids)}")
+        print(f"Would save updated data cache to {args.data_dir}/{args.country}.json")
+        print(f"Would sync to playlist: Spotify Weekly {country_name} Top 200")
         print(f"Tracks to add (first 5): {new_video_ids[:5]}")
         print("Dry run complete. No mutations performed.")
         return
 
+    # Save the updated chart data with resolved IDs to file
+    data_path = Path(args.data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+    out_file = data_path / f"{args.country}.json"
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(chart, f, indent=2, ensure_ascii=False)
+    print(f"Saved updated data to {out_file}")
+
     # 4. Find or Create Playlist
-    target_title = f"Spotify Weekly {country_name} Top {len(tracks)}"
+    target_title = f"Spotify Weekly {country_name} Top 200"
     target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotifx bot."
     
     print(f"Searching for existing playlist: '{target_title}'...")
-    playlists = yt.get_library_playlists()
+    playlists = yt.get_library_playlists(limit=None)
     playlist_id = None
     for pl in playlists:
         if pl["title"] == target_title:
@@ -381,6 +382,7 @@ def main():
             print(f"Found existing playlist: {target_title} (ID: {playlist_id})")
             break
             
+    is_new_playlist = False
     if not playlist_id:
         print(f"Playlist not found. Creating new public playlist: '{target_title}'...")
         playlist_id = yt.create_playlist(
@@ -389,24 +391,37 @@ def main():
             privacy_status="PUBLIC"
         )
         print(f"Created playlist ID: {playlist_id}")
+        is_new_playlist = True
 
     # 5. Nuke and Rebuild
-    print("Fetching current playlist tracks...")
-    playlist_details = yt.get_playlist(playlist_id, limit=None)
-    current_tracks = playlist_details.get("tracks", [])
-    current_count = len(current_tracks)
-    print(f"Current playlist has {current_count} tracks.")
+    if is_new_playlist:
+        current_tracks = []
+        current_count = 0
+        print("Playlist is newly created and empty. Skipping track retrieval.")
+    else:
+        print("Fetching current playlist tracks...")
+        playlist_details = yt.get_playlist(playlist_id, limit=None)
+        current_tracks = playlist_details.get("tracks", [])
+        current_count = len(current_tracks)
+        print(f"Current playlist has {current_count} tracks.")
     
     # Remove all current tracks if any exist
     if current_count > 0:
         print(f"Removing {current_count} tracks...")
-        set_video_ids = [t["setVideoId"] for t in current_tracks if t.get("setVideoId")]
-        yt.remove_playlist_items(playlist_id, set_video_ids)
-        print("Removal complete.")
+        to_remove = [{"videoId": t["videoId"], "setVideoId": t["setVideoId"]} for t in current_tracks if t.get("setVideoId") and t.get("videoId")]
+        if to_remove:
+            yt.remove_playlist_items(playlist_id, to_remove)
+            print("Removal complete.")
+        else:
+            print("No tracks found with setVideoId. Skipping removal.")
         
-    # Add new tracks
+    # Add new tracks in chunks of 50 to prevent timeouts/API limits
     print(f"Adding {len(new_video_ids)} tracks...")
-    yt.add_playlist_items(playlist_id, new_video_ids)
+    chunk_size = 50
+    for i in range(0, len(new_video_ids), chunk_size):
+        chunk = new_video_ids[i:i + chunk_size]
+        print(f"Adding tracks {i+1} to {min(i + chunk_size, len(new_video_ids))}...")
+        yt.add_playlist_items(playlist_id, chunk)
     print("Tracks added successfully.")
     
     # Update description to match the new Week Date
