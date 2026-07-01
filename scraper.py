@@ -42,6 +42,7 @@ def fetch_kworb_html(country_code):
     def fetch_url():
         res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
+        res.encoding = "utf-8"
         return res.text
 
     html_content = retry_operation(

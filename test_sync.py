@@ -5,7 +5,7 @@ import tempfile
 import json
 import sys
 
-from utils import clean_string, verify_match, retry_operation
+from utils import clean_string, clean_title, verify_match, retry_operation
 from playlist_sync import (
     should_skip_sync,
     find_or_create_playlist,
@@ -21,6 +21,30 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(clean_string("  Artist - Title (Remix)  "), "artist title remix")
         self.assertEqual(clean_string(""), "")
         self.assertEqual(clean_string(None), "")
+        # Unicode normalization
+        self.assertEqual(clean_string("eńau"), "enau")
+        self.assertEqual(clean_string("JAŸ-Z"), "jayz")
+        self.assertEqual(clean_string("Titã Me Preguntó"), "tita me pregunto")
+
+    def test_clean_title(self):
+        # Strip feat in parentheses
+        self.assertEqual(clean_title("Closer (feat. Halsey)"), "closer")
+        self.assertEqual(clean_title("No Lie (feat. Dua Lipa)"), "no lie")
+        # Strip remaster suffixes
+        self.assertEqual(clean_title("Smooth Criminal - 2012 Remaster"), "smooth criminal")
+        self.assertEqual(clean_title("Wonderwall - Remastered"), "wonderwall")
+        # Strip explicit/clean version tags
+        self.assertEqual(clean_title("NORMAL (Explicit Ver.)"), "normal")
+        self.assertEqual(clean_title("Seven - Explicit Ver. (feat. Latto)"), "seven")
+        self.assertEqual(clean_title("Confident - Single Version"), "confident")
+        # Strip radio edit
+        self.assertEqual(clean_title("On The Floor (Radio Edit)"), "on the floor")
+        # Strip from movie
+        self.assertEqual(clean_title('I Knew It, I Knew You (From "Toy Story 5")'), "i knew it i knew you")
+        # No-op for clean titles
+        self.assertEqual(clean_title("Blinding Lights"), "blinding lights")
+        self.assertEqual(clean_title(""), "")
+        self.assertEqual(clean_title(None), "")
 
     def test_verify_match(self):
         # Case 1: Perfect match
@@ -65,6 +89,20 @@ class TestSyncBot(unittest.TestCase):
             "artists": [{"name": ""}]
         }
         self.assertFalse(verify_match("The Weeknd", "Blinding Lights", res_empty_artist))
+
+        # Case 7: Featured artist in result title should be stripped
+        res_feat = {
+            "title": "Starboy (feat. Daft Punk)",
+            "artists": [{"name": "The Weeknd"}]
+        }
+        self.assertTrue(verify_match("The Weeknd", "Starboy", res_feat))
+
+        # Case 8: Remaster suffix in target title should be stripped
+        res_remaster = {
+            "title": "Smooth Criminal",
+            "artists": [{"name": "Michael Jackson"}]
+        }
+        self.assertTrue(verify_match("Michael Jackson", "Smooth Criminal - 2012 Remaster", res_remaster))
 
     def test_retry_operation_success(self):
         call_count = 0

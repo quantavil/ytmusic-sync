@@ -2,6 +2,7 @@ import sys
 import re
 import time
 import difflib
+import unicodedata
 from pathlib import Path
 
 # Supported countries (Global and India only)
@@ -34,10 +35,32 @@ def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=
 def clean_string(s):
     if not s:
         return ""
+    # Normalize unicode to decompose accents (e.g. ń -> n, Ÿ -> Y)
+    s = unicodedata.normalize('NFKD', s)
+    s = s.encode('ascii', 'ignore').decode('ascii')
+    
     # Lowercase, remove non-alphanumeric characters, and collapse spaces
     s = s.lower()
     s = re.sub(r"[^a-z0-9\s]", "", s)
     return " ".join(s.split())
+
+def clean_title(title):
+    if not title:
+        return ""
+    
+    title = title.lower()
+    # 1. Strip features in parentheses/brackets: (feat. ...), [feat. ...]
+    title = re.sub(r"\s*[([{-]\s*(?:feat|featuring|ft|with|prod)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\b(?:feat|featuring|ft|with|prod)\b.*", "", title, flags=re.IGNORECASE)
+    
+    # 2. Strip remaster / version / edit in parentheses/brackets: (remastered), (radio edit), etc.
+    # Allow leading words like "Radio", "Acoustic"
+    title = re.sub(r"\s*[([{-]\s*(?:.*?\s+)?(?:remaster|remastered|mix|edit|version|ver|explicit|clean|cover|bonus track|from\s+.*)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
+    
+    # 3. Strip hyphenated/slashed suffixes: - Single Version, - 2012 Remaster, / Live
+    title = re.sub(r"\s*[-|/]\s*(?:.*?\s+)?(?:remaster|remastered|mix|edit|version|ver|explicit|clean|cover|bonus track|single|album|radio|live)\b.*", "", title, flags=re.IGNORECASE)
+    
+    return clean_string(title)
 
 def verify_match(target_artist, target_title, result):
     """
@@ -49,8 +72,8 @@ def verify_match(target_artist, target_title, result):
     res_artists = [a.get("name", "") for a in result.get("artists", [])]
     
     clean_target_art = clean_string(target_artist)
-    clean_target_title = clean_string(target_title)
-    clean_res_title = clean_string(res_title)
+    clean_target_title = clean_title(target_title)
+    clean_res_title = clean_title(res_title)
     
     # 1. Similarity check for title
     title_ratio = difflib.SequenceMatcher(None, clean_target_title, clean_res_title).ratio()
