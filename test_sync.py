@@ -6,7 +6,12 @@ import json
 import sys
 
 from utils import clean_string, verify_match, retry_operation
-from playlist_sync import should_skip_sync
+from playlist_sync import (
+    should_skip_sync,
+    find_or_create_playlist,
+    resolve_track_ids,
+    sync_playlist
+)
 from scraper import parse_kworb_html
 
 class TestSyncBot(unittest.TestCase):
@@ -53,6 +58,13 @@ class TestSyncBot(unittest.TestCase):
             "artists": [{"name": "Different Artist"}]
         }
         self.assertFalse(verify_match("The Weeknd", "Blinding Lights", res_wrong_artist))
+
+        # Case 6: Empty artist name in results (bug #1)
+        res_empty_artist = {
+            "title": "Blinding Lights",
+            "artists": [{"name": ""}]
+        }
+        self.assertFalse(verify_match("The Weeknd", "Blinding Lights", res_empty_artist))
 
     def test_retry_operation_success(self):
         call_count = 0
@@ -179,6 +191,171 @@ class TestSyncBot(unittest.TestCase):
         mock_html_empty = "<html><body><table><tr><th>Pos</th></tr></table></body></html>"
         with self.assertRaises(SystemExit):
             parse_kworb_html(mock_html_empty, "global")
+
+    def test_parse_kworb_html_fallback(self):
+        mock_html = """
+        <html>
+        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
+        <body>
+        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
+        <table>
+            <tr>
+                <th>Unrecognized1</th>
+                <th>Unrecognized2</th>
+                <th>Unrecognized3</th>
+                <th>Unrecognized4</th>
+                <th>Unrecognized5</th>
+                <th>Unrecognized6</th>
+                <th>Unrecognized7</th>
+            </tr>
+            <tr>
+                <td>10</td>
+                <td>+5</td>
+                <td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td>
+                <td>12</td>
+                <td>3</td>
+                <td>unused</td>
+                <td>2,000,000</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        parsed = parse_kworb_html(mock_html, "global")
+        self.assertEqual(parsed["weekDate"], "2026-07-01")
+        self.assertEqual(len(parsed["tracks"]), 1)
+        track = parsed["tracks"][0]
+        self.assertEqual(track["rank"], 10)
+        self.assertEqual(track["change"], "+5")
+        self.assertEqual(track["artist"], "Artist A")
+        self.assertEqual(track["title"], "Title A")
+        self.assertEqual(track["weeks"], 12)
+        self.assertEqual(track["peak"], 3)
+        self.assertEqual(track["streams"], 2000000)
+
+    def test_parse_kworb_html_low_count(self):
+        mock_html = """
+        <html>
+        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
+        <body>
+        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
+        <table>
+            <tr>
+                <th>Pos</th><th>P+</th><th>Artist and Title</th><th>Wks</th><th>Pk</th><th>(x?)</th><th>Streams</th>
+            </tr>
+            <tr>
+                <td>1</td><td>0</td><td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td><td>10</td><td>1</td><td>x</td><td>1,500,000</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        parsed = parse_kworb_html(mock_html, "global")
+        self.assertEqual(len(parsed["tracks"]), 1)
+
+    @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
+    def test_find_or_create_playlist_existing(self, mock_retry):
+        yt = MagicMock()
+        yt.get_library_playlists.return_value = [
+            {"title": "Spotify Weekly Global Top 200", "playlistId": "pl_123"}
+        ]
+        yt.get_playlist.return_value = {
+            "tracks": [{"videoId": "vid1", "setVideoId": "svid1"}]
+        }
+        
+        playlist_id, current_tracks = find_or_create_playlist(yt, "Spotify Weekly Global Top 200", "desc")
+        
+        self.assertEqual(playlist_id, "pl_123")
+        self.assertEqual(len(current_tracks), 1)
+        self.assertEqual(current_tracks[0]["videoId"], "vid1")
+        yt.get_library_playlists.assert_called_once()
+        yt.get_playlist.assert_called_once_with("pl_123", limit=None)
+        yt.create_playlist.assert_not_called()
+
+    @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
+    def test_find_or_create_playlist_new(self, mock_retry):
+        yt = MagicMock()
+        yt.get_library_playlists.return_value = []
+        yt.create_playlist.return_value = "new_pl_456"
+        
+        playlist_id, current_tracks = find_or_create_playlist(yt, "Spotify Weekly Global Top 200", "desc")
+        
+        self.assertEqual(playlist_id, "new_pl_456")
+        self.assertEqual(current_tracks, [])
+        yt.get_library_playlists.assert_called_once()
+        yt.create_playlist.assert_called_once_with(
+            title="Spotify Weekly Global Top 200",
+            description="desc",
+            privacy_status="PUBLIC"
+        )
+        yt.get_playlist.assert_not_called()
+
+    def test_find_or_create_playlist_create_status_failed(self):
+        yt = MagicMock()
+        yt.get_library_playlists.return_value = []
+        yt.create_playlist.return_value = "STATUS_FAILED"
+        
+        # Because create_pl raises RuntimeError when status is STATUS_FAILED, 
+        # retry_operation will exhaust retries and call sys.exit(1) because fatal=True.
+        with self.assertRaises(SystemExit):
+            find_or_create_playlist(yt, "Spotify Weekly Global Top 200", "desc")
+
+    def test_resolve_track_ids(self):
+        yt = MagicMock()
+        # Mock search results: first result matches artist and title
+        yt.search.return_value = [
+            {"title": "Blinding Lights", "artists": [{"name": "The Weeknd"}], "videoId": "yt_light"}
+        ]
+        
+        tracks = [
+            {"spotifyId": "sp1", "artist": "The Weeknd", "title": "Blinding Lights"},
+            {"spotifyId": "sp2", "artist": "Dua Lipa", "title": "Levitating"}
+        ]
+        cache_by_id = {"sp2": "yt_levitate"}
+        cache_by_name = {}
+        
+        resolved = resolve_track_ids(yt, tracks, cache_by_id, cache_by_name)
+        
+        self.assertEqual(resolved[0]["ytMusicId"], "yt_light")
+        self.assertEqual(resolved[1]["ytMusicId"], "yt_levitate")
+        yt.search.assert_called_once_with("The Weeknd Blinding Lights", filter="songs")
+
+    @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
+    def test_sync_playlist_success(self, mock_retry):
+        yt = MagicMock()
+        yt.add_playlist_items.return_value = {"status": "STATUS_SUCCEEDED"}
+        
+        current_tracks = [
+            {"videoId": "old1", "setVideoId": "svid1"},
+            {"videoId": "old2", "setVideoId": "svid2"}
+        ]
+        new_tracks = [f"new_{i}" for i in range(55)]
+        
+        sync_playlist(yt, "pl_123", current_tracks, new_tracks, "new description")
+        
+        # Verify add_playlist_items is called twice (chunk size 50)
+        self.assertEqual(yt.add_playlist_items.call_count, 2)
+        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[:50])
+        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[50:])
+        
+        # Verify remove_playlist_items is called with current tracks
+        yt.remove_playlist_items.assert_called_once_with(
+            "pl_123",
+            [
+                {"videoId": "old1", "setVideoId": "svid1"},
+                {"videoId": "old2", "setVideoId": "svid2"}
+            ]
+        )
+        
+        # Verify edit_playlist is called
+        yt.edit_playlist.assert_called_once_with("pl_123", description="new description")
+
+    def test_sync_playlist_add_failed(self):
+        yt = MagicMock()
+        yt.add_playlist_items.return_value = {"status": "STATUS_FAILED"}
+        
+        with self.assertRaises(SystemExit):
+            sync_playlist(yt, "pl_123", [], ["new_1"], "desc")
 
 if __name__ == "__main__":
     unittest.main()

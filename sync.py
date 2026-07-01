@@ -106,7 +106,7 @@ def main():
     target_title = f"Spotify Weekly {country_name} Top 200"
     target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
     
-    playlist_id, is_new_playlist, current_tracks = find_or_create_playlist(yt, target_title, target_description)
+    playlist_id, current_tracks = find_or_create_playlist(yt, target_title, target_description)
     
     # 5. Sync Playlist
     sync_playlist(yt, playlist_id, current_tracks, new_video_ids, target_description)

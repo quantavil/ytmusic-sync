@@ -50,7 +50,13 @@ def should_skip_sync(out_file, week_date, force, dry_run):
 
 def find_or_create_playlist(yt, target_title, target_description):
     print(f"Searching for existing playlist: '{target_title}'...")
-    playlists = yt.get_library_playlists(limit=None)
+    playlists = retry_operation(
+        lambda: yt.get_library_playlists(limit=None),
+        attempts=3,
+        delay=2,
+        fatal=True,
+        error_msg="Get library playlists"
+    )
     playlist_id = None
     for pl in playlists:
         if pl["title"] == target_title:
@@ -63,11 +69,14 @@ def find_or_create_playlist(yt, target_title, target_description):
         print(f"Playlist not found. Creating new public playlist: '{target_title}'...")
         
         def create_pl():
-            return yt.create_playlist(
+            res = yt.create_playlist(
                 title=target_title,
                 description=target_description,
                 privacy_status="PUBLIC"
             )
+            if res == "STATUS_FAILED":
+                raise RuntimeError(f"STATUS_FAILED: {res}")
+            return res
             
         res = retry_operation(
             create_pl,
@@ -90,11 +99,17 @@ def find_or_create_playlist(yt, target_title, target_description):
         current_tracks = []
     else:
         print("Fetching current playlist tracks...")
-        playlist_details = yt.get_playlist(playlist_id, limit=None)
+        playlist_details = retry_operation(
+            lambda: yt.get_playlist(playlist_id, limit=None),
+            attempts=3,
+            delay=2,
+            fatal=True,
+            error_msg="Get playlist details"
+        )
         current_tracks = playlist_details.get("tracks", [])
         print(f"Current playlist has {len(current_tracks)} tracks.")
         
-    return playlist_id, is_new_playlist, current_tracks
+    return playlist_id, current_tracks
 
 def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
     resolved_count = 0

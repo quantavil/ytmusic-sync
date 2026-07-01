@@ -62,8 +62,8 @@ def verify_match(target_artist, target_title, result):
     else:
         for ra in res_artists:
             clean_ra = clean_string(ra)
-            # Check for direct substring match either way
-            if clean_target_art in clean_ra or clean_ra in clean_target_art:
+            # Check for direct substring match either way (ignoring empty strings)
+            if clean_ra and (clean_target_art in clean_ra or clean_ra in clean_target_art):
                 artist_matched = True
                 break
             # Or high similarity ratio

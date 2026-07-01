@@ -16,7 +16,7 @@ The bot will search for or create the following playlists in your YouTube Music 
 > [!NOTE]
 > If a playlist with the exact target title already exists in your library, the bot will reuse it. Otherwise, it will create a new public playlist.
 >
-> During sync, the bot **nukes and rebuilds** the playlist to match the latest chart sequence, ensuring correct ordering.
+> During sync, the bot uses an **add-then-remove** flow to update the playlist to match the latest chart sequence, avoiding empty-playlist states while ensuring correct ordering.
 
 ---
 
