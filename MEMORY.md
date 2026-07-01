@@ -9,7 +9,7 @@ ytmusic-sync/
 │   └── workflows/
 │       └── sync.yml   # GitHub Actions workflow for scheduled daily sync using uv
 ├── data/              # Cached country charts and resolved ytMusicId entries
-├── auth.py            # Interactive script to set up credentials (supports Browser headers and OAuth)
+├── auth.py            # Interactive script to set up browser authentication credentials
 ├── sync.py            # Standalone scraping and playlist synchronization script
 ├── requirements.txt   # Project dependencies (ytmusicapi, requests, beautifulsoup4)
 ├── browser.json       # Generated browser credentials (must be kept out of version control)
@@ -32,3 +32,4 @@ ytmusic-sync/
 
 ## Blunders
 - [2026-07-01] YouTube Music search and library endpoints fail with 400 Bad Request when authenticated with OAuth client credentials. → YouTube changed backend APIs breaking OAuth clients in ytmusicapi. → Fixed by switching automated synchronization to use Browser Cookie authentication (`browser.json`) instead of OAuth, and routing searches through the authenticated client to avoid unauthenticated rate-limiting.
+- [2026-07-01] YTM API `add_playlist_items` returns `STATUS_FAILED` and rejects the entire 50-track chunk if the list contains any duplicate video IDs. → Fixed by stable-deduplicating track IDs in `sync.py` before batching and uploading.

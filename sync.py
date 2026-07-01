@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import json
 import argparse
 import sys
@@ -39,12 +38,17 @@ def parse_args():
         "--auth",
         type=str,
         default=None,
-        help="Path to auth file (oauth.json or browser.json). Auto-detects if omitted."
+        help="Path to auth file (browser.json). Auto-detects if omitted."
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print actions without modifying YouTube Music playlists."
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force sync even if the weekDate has not changed."
     )
     return parser.parse_args()
 
@@ -78,6 +82,10 @@ def extract_week_date(soup):
             except Exception:
                 pass
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def parse_num(raw):
+    raw_clean = re.sub(r"[^\d]", "", raw)
+    return int(raw_clean) if raw_clean else 0
 
 def scrape_kworb(country_code):
     country_config = COUNTRIES[country_code]
@@ -187,10 +195,7 @@ def scrape_kworb(country_code):
             else:
                 title = track_text
                 
-        def parse_num(raw):
-            raw_clean = re.sub(r"[^\d]", "", raw)
-            return int(raw_clean) if raw_clean else 0
-            
+
         streams = parse_num(cells[col_streams].get_text(strip=True))
         peak = parse_num(cells[col_peak].get_text(strip=True))
         weeks = parse_num(cells[col_days].get_text(strip=True))
@@ -251,18 +256,18 @@ def get_auth_file(auth_path):
             sys.exit(1)
         return auth_path
         
-    # Auto-detect browser.json first (recommended/working), then oauth.json (known issues)
-    for path in ["browser.json", "oauth.json"]:
-        p = Path(path)
-        if p.exists():
-            return str(p)
+    p = Path("browser.json")
+    if p.exists():
+        return str(p)
             
-    print("Error: No authentication file found (oauth.json or browser.json).")
+    print("Error: No authentication file found (browser.json).")
     print("Please run the authentication setup first.")
     sys.exit(1)
 
 def main():
     args = parse_args()
+    print(f"🚀 Starting YouTube Music sync for country: {args.country.upper()}")
+    out_file = Path(args.data_dir) / f"{args.country}.json"
     
     # 1. Scrape chart data from Kworb
     chart = scrape_kworb(args.country)
@@ -272,28 +277,26 @@ def main():
     
     print(f"Loaded {len(tracks)} tracks for {country_name} ({week_date}) from Kworb.")
     
+    # Check if we already synchronized this week to save API quota
+    if out_file.exists() and not args.force and not args.dry_run:
+        try:
+            with open(out_file, "r", encoding="utf-8") as f:
+                cached_chart = json.load(f)
+            cached_week_date = cached_chart.get("weekDate")
+            print(f"Checking sync status: Cached Date = {cached_week_date}, Chart Date = {week_date}")
+            if cached_week_date == week_date:
+                print(f"ℹ️ Playlist for {country_name} is already up to date ({week_date}). Skipping sync.")
+                return
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to read cached chart file to compare weekDate: {e}")
+            
+    if args.force:
+        print("Force flag active. Proceeding with sync regardless of cache date comparison.")
+    
     # 2. Authenticate with YouTube Music
     auth_file = get_auth_file(args.auth)
     print(f"Authenticating using: {auth_file}")
-    
-    try:
-        with open(auth_file, "r") as f:
-            auth_data = json.load(f)
-    except Exception:
-        auth_data = {}
-
-    if isinstance(auth_data, dict) and "client_id" in auth_data and "client_secret" in auth_data:
-        from ytmusicapi.auth.oauth.credentials import OAuthCredentials
-        print("Detected OAuth credentials. Initializing with oauth_credentials.")
-        yt = YTMusic(
-            auth_file,
-            oauth_credentials=OAuthCredentials(
-                client_id=auth_data["client_id"],
-                client_secret=auth_data["client_secret"]
-            )
-        )
-    else:
-        yt = YTMusic(auth_file)
+    yt = YTMusic(auth_file)
         
     # 3. Load cache and enrich tracks with YouTube Music IDs
     cache_by_id, cache_by_name = load_ytmusic_cache(args.data_dir)
@@ -302,7 +305,11 @@ def main():
     resolved_count = 0
     cached_count = 0
     
-    for t in tracks:
+    print("Enriching track metadata with YouTube Music IDs...")
+    for idx, t in enumerate(tracks):
+        if (idx + 1) % 50 == 0 or idx == 0 or idx == len(tracks) - 1:
+            print(f"  Progress: {idx + 1}/{len(tracks)} tracks processed...")
+            
         spotify_id = t.get("spotifyId")
         artist = t.get("artist")
         title = t.get("title")
@@ -329,6 +336,7 @@ def main():
                     if search_results:
                         yt_id = search_results[0].get("videoId")
                         if yt_id:
+                            print(f"    🔍 [Search] Resolved '{query}' to YouTube ID: {yt_id}")
                             t["ytMusicId"] = yt_id
                             # Add to in-memory cache
                             if spotify_id:
@@ -346,8 +354,16 @@ def main():
                     
     print(f"YTMusic Enrichment: {resolved_count} resolved via search, {cached_count} resolved via cache.")
     
-    new_video_ids = [t["ytMusicId"] for t in tracks if t.get("ytMusicId")]
-    print(f"Found {len(new_video_ids)} resolved YouTube Music track IDs out of {len(tracks)} tracks.")
+    # Deduplicate video IDs while preserving ranking order to prevent YTM API failure
+    seen = set()
+    new_video_ids = []
+    for t in tracks:
+        yt_id = t.get("ytMusicId")
+        if yt_id and yt_id not in seen:
+            seen.add(yt_id)
+            new_video_ids.append(yt_id)
+            
+    print(f"Found {len(new_video_ids)} unique resolved YouTube Music track IDs out of {len(tracks)} tracks.")
     
     if not new_video_ids:
         print("No YouTube Music IDs found. Nothing to sync.")
@@ -362,9 +378,7 @@ def main():
         return
 
     # Save the updated chart data with resolved IDs to file
-    data_path = Path(args.data_dir)
-    data_path.mkdir(parents=True, exist_ok=True)
-    out_file = data_path / f"{args.country}.json"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(chart, f, indent=2, ensure_ascii=False)
     print(f"Saved updated data to {out_file}")
@@ -385,11 +399,18 @@ def main():
     is_new_playlist = False
     if not playlist_id:
         print(f"Playlist not found. Creating new public playlist: '{target_title}'...")
-        playlist_id = yt.create_playlist(
+        res = yt.create_playlist(
             title=target_title,
             description=target_description,
             privacy_status="PUBLIC"
         )
+        if isinstance(res, str) and res != "STATUS_FAILED":
+            playlist_id = res
+        elif isinstance(res, dict) and "playlistId" in res:
+            playlist_id = res["playlistId"]
+        else:
+            print(f"❌ Error: Failed to create playlist. Response: {res}")
+            sys.exit(1)
         print(f"Created playlist ID: {playlist_id}")
         is_new_playlist = True
 
@@ -407,13 +428,13 @@ def main():
     
     # Remove all current tracks if any exist
     if current_count > 0:
-        print(f"Removing {current_count} tracks...")
         to_remove = [{"videoId": t["videoId"], "setVideoId": t["setVideoId"]} for t in current_tracks if t.get("setVideoId") and t.get("videoId")]
         if to_remove:
+            print(f"Removing {len(to_remove)} tracks from YouTube Music playlist...")
             yt.remove_playlist_items(playlist_id, to_remove)
             print("Removal complete.")
         else:
-            print("No tracks found with setVideoId. Skipping removal.")
+            print("No tracks with valid setVideoId and videoId found. Skipping removal.")
         
     # Add new tracks in chunks of 50 to prevent timeouts/API limits
     print(f"Adding {len(new_video_ids)} tracks...")
@@ -421,7 +442,11 @@ def main():
     for i in range(0, len(new_video_ids), chunk_size):
         chunk = new_video_ids[i:i + chunk_size]
         print(f"Adding tracks {i+1} to {min(i + chunk_size, len(new_video_ids))}...")
-        yt.add_playlist_items(playlist_id, chunk)
+        res = yt.add_playlist_items(playlist_id, chunk)
+        status = res.get('status') if isinstance(res, dict) else res
+        if status == 'STATUS_FAILED':
+            print(f"❌ Error: Failed to add chunk {i+1} to {min(i + chunk_size, len(new_video_ids))} to playlist. Response: {res}")
+            sys.exit(1)
     print("Tracks added successfully.")
     
     # Update description to match the new Week Date
