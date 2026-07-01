@@ -5,7 +5,7 @@ import tempfile
 import json
 import sys
 
-from utils import clean_string, clean_title, verify_match, retry_operation
+from utils import clean_string, clean_title, verify_match, retry_operation, extract_movie_name
 from playlist_sync import (
     should_skip_sync,
     find_or_create_playlist,
@@ -41,10 +41,20 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(clean_title("On The Floor (Radio Edit)"), "on the floor")
         # Strip from movie
         self.assertEqual(clean_title('I Knew It, I Knew You (From "Toy Story 5")'), "i knew it i knew you")
+        # Strip pipe '|' metadata
+        self.assertEqual(clean_title("Labon Ko - (Lyrics) | Bhool Bhulaiyaa | Pritam | K.K."), "labon ko")
         # No-op for clean titles
         self.assertEqual(clean_title("Blinding Lights"), "blinding lights")
         self.assertEqual(clean_title(""), "")
         self.assertEqual(clean_title(None), "")
+
+    def test_extract_movie_name(self):
+        self.assertEqual(extract_movie_name('Haareya (From "Meri Pyaari Bindu ")'), "meri pyaari bindu")
+        self.assertEqual(extract_movie_name('Sajni (From "Laapataa Ladies")'), "laapataa ladies")
+        self.assertEqual(extract_movie_name('Dhun (Movie: Saiyaara)'), "saiyaara")
+        self.assertEqual(extract_movie_name('Humsafar [From Movie Saiyaara]'), "saiyaara")
+        self.assertEqual(extract_movie_name('Blinding Lights'), "")
+        self.assertEqual(extract_movie_name(None), "")
 
     def test_verify_match(self):
         # Case 1: Perfect match
@@ -110,6 +120,21 @@ class TestSyncBot(unittest.TestCase):
             "artists": [{"name": "Dymnd"}] # Channel name instead of artist
         }
         self.assertTrue(verify_match("Drake", "One Dance", res_video))
+
+        # Case 10: Duo/collaborator component matching
+        res_duo = {
+            "title": "Raanjhan",
+            "artists": [{"name": "Parampara Tandon"}]
+        }
+        self.assertTrue(verify_match("Sachet-Parampara", "Raanjhan", res_duo))
+
+        # Case 11: Movie/Album name cross-verification (composer to singer matching)
+        res_movie = {
+            "title": "Sajni",
+            "artists": [{"name": "Arijit Singh"}], # Spotify has composer "Ram Sampath"
+            "album": {"name": "Laapataa Ladies"}
+        }
+        self.assertTrue(verify_match("Ram Sampath", "Sajni (From \"Laapataa Ladies\")", res_movie))
 
     def test_retry_operation_success(self):
         call_count = 0
