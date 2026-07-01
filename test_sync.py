@@ -356,7 +356,28 @@ class TestSyncBot(unittest.TestCase):
         
         self.assertEqual(resolved[0]["ytMusicId"], "yt_light")
         self.assertEqual(resolved[1]["ytMusicId"], "yt_levitate")
+        # Songs search matched, so only songs filter was called
         yt.search.assert_called_once_with("The Weeknd Blinding Lights", filter="songs")
+
+    def test_resolve_track_ids_video_fallback(self):
+        yt = MagicMock()
+        # Songs search returns no matching result, video search does
+        def mock_search(query, filter=None):
+            if filter == "songs":
+                return [{"title": "Wrong Song", "artists": [{"name": "Wrong Artist"}], "videoId": "wrong"}]
+            elif filter == "videos":
+                return [{"title": "One Dance", "artists": [{"name": "Drake"}], "videoId": "yt_dance"}]
+            return []
+        yt.search.side_effect = mock_search
+        
+        tracks = [{"spotifyId": "sp1", "artist": "Drake", "title": "One Dance"}]
+        
+        resolved = resolve_track_ids(yt, tracks, {}, {})
+        
+        self.assertEqual(resolved[0]["ytMusicId"], "yt_dance")
+        self.assertEqual(yt.search.call_count, 2)
+        yt.search.assert_any_call("Drake One Dance", filter="songs")
+        yt.search.assert_any_call("Drake One Dance", filter="videos")
 
     @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
     def test_sync_playlist_success(self, mock_retry):

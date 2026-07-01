@@ -62,11 +62,12 @@ def clean_title(title):
     
     return clean_string(title)
 
-def verify_match(target_artist, target_title, result):
+def verify_match(target_artist, target_title, result, threshold=0.80):
     """
     Checks if a search result resembles the target_artist and target_title.
-    result is a dict returned by ytmusicapi (filter="songs").
+    result is a dict returned by ytmusicapi (filter="songs" or "videos").
     Expected keys: 'title', 'artists'.
+    threshold controls the minimum title similarity ratio (default 0.75).
     """
     res_title = result.get("title", "")
     res_artists = [a.get("name", "") for a in result.get("artists", [])]
@@ -95,7 +96,7 @@ def verify_match(target_artist, target_title, result):
                 break
                 
     # Accept if title is highly similar and artist matches
-    if title_ratio >= 0.75 and artist_matched:
+    if title_ratio >= threshold and artist_matched:
         return True
     return False
 

@@ -146,32 +146,46 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
                     time.sleep(random.uniform(0.3, 0.8))
                     
                     search_results = yt.search(query, filter="songs")
+                    matched_result = None
+                    matched_idx = -1
+                    search_type = "songs"
+                    
                     if search_results:
-                        matched_result = None
                         # Check top 5 results for verification
                         for r_idx, res in enumerate(search_results[:5]):
                             if verify_match(artist, title, res):
                                 matched_result = res
+                                matched_idx = r_idx
                                 break
-                        
-                        if matched_result:
-                            yt_id = matched_result.get("videoId")
-                            if yt_id:
-                                print(f"    🔍 [Search] Resolved '{query}' to YouTube ID: {yt_id} (matched on result {r_idx + 1})")
-                                t["ytMusicId"] = yt_id
-                                # Add to in-memory cache
-                                if spotify_id:
-                                    cache_by_id[spotify_id] = yt_id
-                                key = f"{artist.lower().strip()}|||{title.lower().strip()}"
-                                cache_by_name[key] = yt_id
-                                
-                                resolved_count += 1
-                            else:
-                                print(f"  ⚠ No videoId found in verified match for: {query}")
+                    
+                    # Fallback: search videos with tighter threshold
+                    if not matched_result:
+                        time.sleep(random.uniform(0.3, 0.8))
+                        video_results = yt.search(query, filter="videos")
+                        if video_results:
+                            for r_idx, res in enumerate(video_results[:5]):
+                                if verify_match(artist, title, res):
+                                    matched_result = res
+                                    matched_idx = r_idx
+                                    search_type = "videos"
+                                    break
+                    
+                    if matched_result:
+                        yt_id = matched_result.get("videoId")
+                        if yt_id:
+                            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' to YouTube ID: {yt_id} (matched on result {matched_idx + 1})")
+                            t["ytMusicId"] = yt_id
+                            # Add to in-memory cache
+                            if spotify_id:
+                                cache_by_id[spotify_id] = yt_id
+                            key = f"{artist.lower().strip()}|||{title.lower().strip()}"
+                            cache_by_name[key] = yt_id
+                            
+                            resolved_count += 1
                         else:
-                            print(f"  ⚠️ Warning: Verification failed for '{query}'. None of the top {len(search_results[:5])} results passed the similarity criteria.")
+                            print(f"  ⚠ No videoId found in verified match for: {query}")
                     else:
-                        print(f"  ⚠ No search results for: {query}")
+                        print(f"  ⚠️ Warning: Verification failed for '{query}'. No songs or videos in top 5 passed similarity criteria.")
                 except Exception as e:
                     print(f"  ⚠ YTMusic search failed for '{query}': {e}")
                     
