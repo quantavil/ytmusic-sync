@@ -4,7 +4,7 @@ import random
 import json
 from pathlib import Path
 
-from utils import retry_operation, verify_match
+from utils import retry_operation, title_matches, artist_matches, clean_string
 
 def load_ytmusic_cache(data_dir):
     cache_by_id = {}
@@ -28,7 +28,7 @@ def load_ytmusic_cache(data_dir):
                         if spotify_id:
                             cache_by_id[spotify_id] = yt_id
                         if artist and title:
-                            key = f"{artist.lower().strip()}|||{title.lower().strip()}"
+                            key = f"{clean_string(artist)}|||{clean_string(title)}"
                             cache_by_name[key] = yt_id
         except Exception as e:
             print(f"Warning: Failed to parse cache from {p}: {e}")
@@ -59,9 +59,9 @@ def find_or_create_playlist(yt, target_title, target_description):
     )
     playlist_id = None
     for pl in playlists:
-        if pl["title"] == target_title:
+        if pl["title"].strip().lower() == target_title.strip().lower():
             playlist_id = pl["playlistId"]
-            print(f"Found existing playlist: {target_title} (ID: {playlist_id})")
+            print(f"Found existing playlist: {pl['title']} (ID: {playlist_id})")
             break
             
     is_new_playlist = False
@@ -85,13 +85,12 @@ def find_or_create_playlist(yt, target_title, target_description):
             fatal=True,
             error_msg="Create playlist"
         )
-        if isinstance(res, str) and res != "STATUS_FAILED":
+        if isinstance(res, str):
             playlist_id = res
         elif isinstance(res, dict) and "playlistId" in res:
             playlist_id = res["playlistId"]
         else:
-            print(f"❌ Error: Failed to create playlist. Response: {res}")
-            sys.exit(1)
+            raise RuntimeError(f"Failed to create playlist. Response: {res}")
         print(f"Created playlist ID: {playlist_id}")
         is_new_playlist = True
         
@@ -132,7 +131,7 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
         
         # Check Name cache
         if not yt_id and artist and title:
-            key = f"{artist.lower().strip()}|||{title.lower().strip()}"
+            key = f"{clean_string(artist)}|||{clean_string(title)}"
             yt_id = cache_by_name.get(key)
             
         if yt_id:
@@ -151,43 +150,65 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
                     search_type = "songs"
                     
                     if search_results:
-                        # Check top 5 results for verification
-                        for r_idx, res in enumerate(search_results[:5]):
-                            if verify_match(artist, title, res):
-                                matched_result = res
-                                matched_idx = r_idx
-                                break
+                        candidate_result = None
+                        candidate_idx = -1
+                        for r_idx, res in enumerate(search_results[:3]):
+                            if title_matches(title, res):
+                                if artist_matches(artist, res):
+                                    matched_result = res
+                                    matched_idx = r_idx
+                                    break
+                                elif candidate_result is None:
+                                    candidate_result = res
+                                    candidate_idx = r_idx
+                        
+                        if not matched_result and candidate_result:
+                            matched_result = candidate_result
+                            matched_idx = candidate_idx
                     
-                    # Fallback: search videos with tighter threshold
+                    # Fallback: search videos
                     if not matched_result:
+                        print(f"    ⏭️ Songs search miss for '{query}', trying videos...")
                         time.sleep(random.uniform(0.3, 0.8))
                         video_results = yt.search(query, filter="videos")
                         if video_results:
-                            for r_idx, res in enumerate(video_results[:5]):
-                                if verify_match(artist, title, res):
-                                    matched_result = res
-                                    matched_idx = r_idx
-                                    search_type = "videos"
-                                    break
+                            candidate_result = None
+                            candidate_idx = -1
+                            for r_idx, res in enumerate(video_results[:3]):
+                                if title_matches(title, res):
+                                    if artist_matches(artist, res):
+                                        matched_result = res
+                                        matched_idx = r_idx
+                                        search_type = "videos"
+                                        break
+                                    elif candidate_result is None:
+                                        candidate_result = res
+                                        candidate_idx = r_idx
+                                        
+                            if not matched_result and candidate_result:
+                                matched_result = candidate_result
+                                matched_idx = candidate_idx
+                                search_type = "videos"
                     
                     if matched_result:
                         yt_id = matched_result.get("videoId")
                         if yt_id:
-                            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' to YouTube ID: {yt_id} (matched on result {matched_idx + 1})")
+                            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' → {yt_id} (result {matched_idx + 1})")
                             t["ytMusicId"] = yt_id
-                            # Add to in-memory cache
                             if spotify_id:
                                 cache_by_id[spotify_id] = yt_id
-                            key = f"{artist.lower().strip()}|||{title.lower().strip()}"
+                            key = f"{clean_string(artist)}|||{clean_string(title)}"
                             cache_by_name[key] = yt_id
-                            
                             resolved_count += 1
                         else:
-                            print(f"  ⚠ No videoId found in verified match for: {query}")
+                            print(f"  ⚠ No videoId in match for: {query}")
+                            matched_result = None
                     else:
-                        print(f"  ⚠️ Warning: Verification failed for '{query}'. No songs or videos in top 5 passed similarity criteria.")
+                        print(f"  ⚠️ Unresolved: '{query}' — no title match in top 3 songs or videos.")
                 except Exception as e:
                     print(f"  ⚠ YTMusic search failed for '{query}': {e}")
+            else:
+                print(f"  ⚠️ Warning: Skipping track due to missing metadata — Artist: '{artist}', Title: '{title}'")
                     
     print(f"YTMusic Enrichment: {resolved_count} resolved via search, {cached_count} resolved via cache.")
     return tracks
@@ -230,17 +251,21 @@ def sync_playlist(yt, playlist_id, current_tracks, new_video_ids, target_descrip
                 skipped_remove_count += 1
         
         if skipped_remove_count > 0:
-            print(f"⚠️ Warning: {skipped_remove_count} tracks in original playlist could not be marked for removal because they lack videoId or setVideoId.")
+            print(f"⚠️ Warning: {skipped_remove_count} tracks in original playlist could not be marked for removal because they lack videoId or setVideoId. These tracks may be unavailable videos and could accumulate. If duplicates persist, consider recreating the playlist.")
             
         if to_remove:
             print(f"Removing {len(to_remove)} old tracks from YouTube Music playlist...")
-            retry_operation(
-                lambda: yt.remove_playlist_items(playlist_id, to_remove),
-                attempts=3,
-                delay=2,
-                fatal=True,
-                error_msg="Remove tracks from playlist"
-            )
+            chunk_size = 50
+            for i in range(0, len(to_remove), chunk_size):
+                chunk = to_remove[i:i + chunk_size]
+                print(f"Removing tracks {i+1} to {min(i + chunk_size, len(to_remove))}...")
+                retry_operation(
+                    lambda: yt.remove_playlist_items(playlist_id, chunk),
+                    attempts=3,
+                    delay=2,
+                    fatal=True,
+                    error_msg=f"Remove chunk {i+1} to {min(i + chunk_size, len(to_remove))} from playlist"
+                )
             print("Removal of old tracks complete.")
         else:
             print("No tracks with valid setVideoId and videoId found. Skipping removal.")

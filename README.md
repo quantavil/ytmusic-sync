@@ -74,6 +74,7 @@ Once authentication is configured (having `browser.json` in this directory), run
 | `--data-dir` | Path to save/load scraped JSON cache metadata. | `data` |
 | `--auth` | Specific path to the auth file. | *Auto-detects `browser.json`* |
 | `--dry-run` | Run the sync logic and output actions without writing to YouTube Music. | *Disabled* |
+| `--force` | Force sync even if the weekDate has not changed. | *Disabled* |
 
 ---
 

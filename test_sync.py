@@ -5,7 +5,7 @@ import tempfile
 import json
 import sys
 
-from utils import clean_string, clean_title, verify_match, retry_operation, extract_movie_name
+from utils import clean_string, clean_title, title_matches, artist_matches, retry_operation
 from playlist_sync import (
     should_skip_sync,
     find_or_create_playlist,
@@ -43,98 +43,57 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(clean_title('I Knew It, I Knew You (From "Toy Story 5")'), "i knew it i knew you")
         # Strip pipe '|' metadata
         self.assertEqual(clean_title("Labon Ko - (Lyrics) | Bhool Bhulaiyaa | Pritam | K.K."), "labon ko")
+        # Preserve "with" as an ordinary word in titles
+        self.assertEqual(clean_title("Stay With Me"), "stay with me")
+        self.assertEqual(clean_title("With You"), "with you")
+        # But still strip bracketed "with" features
+        self.assertEqual(clean_title("Closer (with Halsey)"), "closer")
         # No-op for clean titles
         self.assertEqual(clean_title("Blinding Lights"), "blinding lights")
         self.assertEqual(clean_title(""), "")
         self.assertEqual(clean_title(None), "")
 
-    def test_extract_movie_name(self):
-        self.assertEqual(extract_movie_name('Haareya (From "Meri Pyaari Bindu ")'), "meri pyaari bindu")
-        self.assertEqual(extract_movie_name('Sajni (From "Laapataa Ladies")'), "laapataa ladies")
-        self.assertEqual(extract_movie_name('Dhun (Movie: Saiyaara)'), "saiyaara")
-        self.assertEqual(extract_movie_name('Humsafar [From Movie Saiyaara]'), "saiyaara")
-        self.assertEqual(extract_movie_name('Blinding Lights'), "")
-        self.assertEqual(extract_movie_name(None), "")
+    def test_title_matches(self):
+        # Exact match
+        self.assertTrue(title_matches("Blinding Lights", {"title": "Blinding Lights"}))
 
-    def test_verify_match(self):
-        # Case 1: Perfect match
-        res_ok = {
-            "title": "Blinding Lights",
-            "artists": [{"name": "The Weeknd"}]
-        }
-        self.assertTrue(verify_match("The Weeknd", "Blinding Lights", res_ok))
+        # Match after stripping feat suffix
+        self.assertTrue(title_matches("Starboy", {"title": "Starboy (feat. Daft Punk)"}))
 
-        # Case 2: Substring matching in collaborations
-        res_collab = {
-            "title": "Peaches",
-            "artists": [{"name": "Justin Bieber"}, {"name": "Daniel Caesar"}, {"name": "Giveon"}]
-        }
-        self.assertTrue(verify_match("Justin Bieber", "Peaches", res_collab))
-        self.assertTrue(verify_match("Daniel Caesar", "peaches", res_collab))
+        # Match after stripping remaster suffix
+        self.assertTrue(title_matches("Smooth Criminal - 2012 Remaster", {"title": "Smooth Criminal"}))
 
-        # Case 3: Minor typos / punctuation
-        res_typo = {
-            "title": "Rockstar",
-            "artists": [{"name": "Post Malone feat. 21 Savage"}]
-        }
-        self.assertTrue(verify_match("Post Malone", "Rockstar!", res_typo))
+        # Match with movie suffix stripped from both
+        self.assertTrue(title_matches('Sajni (From "Laapataa Ladies")', {"title": "Sajni"}))
 
-        # Case 4: Mismatched title (ratio too low)
-        res_different_title = {
-            "title": "Starboy",
-            "artists": [{"name": "The Weeknd"}]
-        }
-        self.assertFalse(verify_match("The Weeknd", "Blinding Lights", res_different_title))
+        # Mismatched title (ratio too low) → reject
+        self.assertFalse(title_matches("Blinding Lights", {"title": "Starboy"}))
 
-        # Case 5: Mismatched artist
-        res_wrong_artist = {
-            "title": "Blinding Lights",
-            "artists": [{"name": "Different Artist"}]
-        }
-        self.assertFalse(verify_match("The Weeknd", "Blinding Lights", res_wrong_artist))
+        # Composer/singer crossover — title-only so this passes now
+        self.assertTrue(title_matches("Aawaara Angaara", {"title": "Aawaara Angaara"}))
 
-        # Case 6: Empty artist name in results (bug #1)
-        res_empty_artist = {
-            "title": "Blinding Lights",
-            "artists": [{"name": ""}]
-        }
-        self.assertFalse(verify_match("The Weeknd", "Blinding Lights", res_empty_artist))
+        # Video title with pipe stripped
+        self.assertTrue(title_matches("Labon Ko", {"title": "Labon Ko - (Lyrics) | Bhool Bhulaiyaa | Pritam"}))
 
-        # Case 7: Featured artist in result title should be stripped
-        res_feat = {
-            "title": "Starboy (feat. Daft Punk)",
-            "artists": [{"name": "The Weeknd"}]
-        }
-        self.assertTrue(verify_match("The Weeknd", "Starboy", res_feat))
+    def test_artist_matches(self):
+        # Exact match
+        self.assertTrue(artist_matches("The Weeknd", {"artists": [{"name": "The Weeknd"}]}))
 
-        # Case 8: Remaster suffix in target title should be stripped
-        res_remaster = {
-            "title": "Smooth Criminal",
-            "artists": [{"name": "Michael Jackson"}]
-        }
-        self.assertTrue(verify_match("Michael Jackson", "Smooth Criminal - 2012 Remaster", res_remaster))
+        # Collab component match
+        self.assertTrue(artist_matches("Justin Bieber & Daniel Caesar", {"artists": [{"name": "Daniel Caesar"}]}))
+        self.assertTrue(artist_matches("Sachet-Parampara", {"artists": [{"name": "Parampara Tandon"}]}))
 
-        # Case 9: Artist in result title (video fallback)
-        res_video = {
-            "title": "One Dance - Drake (Official Audio)",
-            "artists": [{"name": "Dymnd"}] # Channel name instead of artist
-        }
-        self.assertTrue(verify_match("Drake", "One Dance", res_video))
+        # Substring match (valid containing tokens)
+        self.assertTrue(artist_matches("Post Malone", {"artists": [{"name": "Post Malone feat. 21 Savage"}]}))
 
-        # Case 10: Duo/collaborator component matching
-        res_duo = {
-            "title": "Raanjhan",
-            "artists": [{"name": "Parampara Tandon"}]
-        }
-        self.assertTrue(verify_match("Sachet-Parampara", "Raanjhan", res_duo))
+        # Mismatched artist
+        self.assertFalse(artist_matches("The Weeknd", {"artists": [{"name": "Different Artist"}]}))
+        self.assertFalse(artist_matches("The Weeknd", {"artists": [{"name": ""}]}))
 
-        # Case 11: Movie/Album name cross-verification (composer to singer matching)
-        res_movie = {
-            "title": "Sajni",
-            "artists": [{"name": "Arijit Singh"}], # Spotify has composer "Ram Sampath"
-            "album": {"name": "Laapataa Ladies"}
-        }
-        self.assertTrue(verify_match("Ram Sampath", "Sajni (From \"Laapataa Ladies\")", res_movie))
+        # Tightened token match (rejecting false-positives of substring containment)
+        self.assertFalse(artist_matches("Ana", {"artists": [{"name": "Anastasia"}]}))
+        self.assertFalse(artist_matches("War", {"artists": [{"name": "Warpaint"}]}))
+        self.assertFalse(artist_matches("Ari", {"artists": [{"name": "Arijit Singh"}]}))
 
     def test_retry_operation_success(self):
         call_count = 0
@@ -259,8 +218,23 @@ class TestSyncBot(unittest.TestCase):
 
     def test_parse_kworb_html_zero_rows(self):
         mock_html_empty = "<html><body><table><tr><th>Pos</th></tr></table></body></html>"
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ValueError):
             parse_kworb_html(mock_html_empty, "global")
+
+    def test_parse_kworb_html_missing_date(self):
+        mock_html_no_date = """
+        <html>
+        <head><title>Spotify Weekly Chart</title></head>
+        <body>
+        <table>
+            <tr><th>Pos</th><th>P+</th><th>Artist and Title</th><th>Wks</th><th>Pk</th><th>(x?)</th><th>Streams</th></tr>
+            <tr><td>1</td><td>0</td><td>Artist A - <a href="track/1.html">Title A</a></td><td>10</td><td>1</td><td>x</td><td>1,500,000</td></tr>
+        </table>
+        </body>
+        </html>
+        """
+        with self.assertRaises(ValueError):
+            parse_kworb_html(mock_html_no_date, "global")
 
     def test_parse_kworb_html_fallback(self):
         mock_html = """
@@ -302,6 +276,42 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(track["weeks"], 12)
         self.assertEqual(track["peak"], 3)
         self.assertEqual(track["streams"], 2000000)
+
+    def test_parse_kworb_html_single_anchor(self):
+        mock_html = """
+        <html>
+        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
+        <body>
+        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
+        <table>
+            <tr>
+                <th>Pos</th>
+                <th>P+</th>
+                <th>Artist and Title</th>
+                <th>Wks</th>
+                <th>Pk</th>
+                <th>(x?)</th>
+                <th>Streams</th>
+            </tr>
+            <tr>
+                <td>1</td>
+                <td>0</td>
+                <td>Artist A - <a href="track/spotifyid1.html">Title A</a></td>
+                <td>10</td>
+                <td>1</td>
+                <td>x</td>
+                <td>1,500,000</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        parsed = parse_kworb_html(mock_html, "global")
+        self.assertEqual(len(parsed["tracks"]), 1)
+        track = parsed["tracks"][0]
+        self.assertEqual(track["artist"], "Artist A")
+        self.assertEqual(track["title"], "Title A")
+        self.assertEqual(track["spotifyId"], "spotifyid1")
 
     def test_parse_kworb_html_low_count(self):
         mock_html = """
@@ -441,7 +451,8 @@ class TestSyncBot(unittest.TestCase):
         # Verify edit_playlist is called
         yt.edit_playlist.assert_called_once_with("pl_123", description="new description")
 
-    def test_sync_playlist_add_failed(self):
+    @patch("utils.time.sleep", return_value=None)
+    def test_sync_playlist_add_failed(self, mock_sleep):
         yt = MagicMock()
         yt.add_playlist_items.return_value = {"status": "STATUS_FAILED"}
         

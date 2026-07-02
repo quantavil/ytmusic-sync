@@ -29,9 +29,7 @@ def extract_week_date(soup):
                         continue
             except Exception:
                 pass
-    fallback_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    print(f"⚠️ Warning: Failed to parse week date from Kworb page. Falling back to today's date: {fallback_date}")
-    return fallback_date
+    raise ValueError("Failed to parse week date from Kworb page structure. Page layout might have changed.")
 
 def fetch_kworb_html(country_code):
     country_config = COUNTRIES[country_code]
@@ -60,13 +58,11 @@ def parse_kworb_html(html_content, country_code):
     soup = BeautifulSoup(html_content, "html.parser")
     table = soup.find("table")
     if not table:
-        print(f"Error: No table found in HTML for {country_code}")
-        sys.exit(1)
+        raise ValueError(f"No table found in HTML for {country_code}")
         
     rows = table.find_all("tr")
     if not rows:
-        print("Error: Table has no rows")
-        sys.exit(1)
+        raise ValueError("Table has no rows")
         
     header_row = rows[0]
     headers_list = [th.get_text(strip=True) for th in header_row.find_all(["th", "td"])]
@@ -120,18 +116,20 @@ def parse_kworb_html(html_content, country_code):
     week_date = extract_week_date(soup)
     tracks = []
     
+    required_cols = max(col_pos, col_change, col_track, col_weeks, col_peak, col_streams) + 1
     for r_idx in range(1, len(rows)):
         if len(tracks) >= 200:
             break
             
         cells = rows[r_idx].find_all("td")
-        required_cols = max(col_pos, col_change, col_track, col_weeks, col_peak, col_streams) + 1
         if len(cells) < required_cols:
+            print(f"⚠️ Warning: Skipping row {r_idx} because it has only {len(cells)} columns (expected {required_cols})")
             continue
             
         try:
             rank = int(cells[col_pos].get_text(strip=True))
         except ValueError:
+            print(f"⚠️ Warning: Skipping row {r_idx} due to invalid rank format: '{cells[col_pos].get_text(strip=True)}'")
             continue
             
         change = cells[col_change].get_text(strip=True)
@@ -144,6 +142,8 @@ def parse_kworb_html(html_content, country_code):
         title = ""
         spotify_id = ""
         
+        # Note: Featured/collaborator artists (e.g. "(w/ Ejae...)") are intentionally omitted
+        # from the scraped artist field as YTM search handles primary artist + title best.
         href = ""
         if len(a_tags) >= 2:
             artist = a_tags[0].get_text(strip=True)
@@ -152,8 +152,11 @@ def parse_kworb_html(html_content, country_code):
         elif len(a_tags) == 1:
             title = a_tags[0].get_text(strip=True)
             href = a_tags[0].get("href", "")
+            track_text = track_cell.get_text(" ", strip=True)
+            if " - " in track_text:
+                artist = track_text.split(" - ", 1)[0].strip()
         else:
-            track_text = track_cell.get_text(strip=True)
+            track_text = track_cell.get_text(" ", strip=True)
             artist, title = track_text.split(" - ", 1) if " - " in track_text else ("", track_text)
 
         if href:
@@ -178,8 +181,7 @@ def parse_kworb_html(html_content, country_code):
         })
         
     if len(tracks) == 0:
-        print("❌ Error: Scraped 0 tracks from Kworb page. This indicates a parser structure or column layout change.")
-        sys.exit(1)
+        raise ValueError("Scraped 0 tracks from Kworb page. This indicates a parser structure or column layout change.")
     elif len(tracks) < 100:
         print(f"⚠️ Warning: Scraped only {len(tracks)} tracks (expected ~200). Some rows might have failed to parse.")
         

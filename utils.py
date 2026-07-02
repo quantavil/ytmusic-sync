@@ -1,9 +1,9 @@
 import sys
 import re
 import time
-import difflib
 import unicodedata
 from pathlib import Path
+from rapidfuzz import fuzz
 
 # Supported countries (Global and India only)
 COUNTRIES = {
@@ -44,20 +44,6 @@ def clean_string(s):
     s = re.sub(r"[^a-z0-9\s]", "", s)
     return " ".join(s.split())
 
-def extract_movie_name(title):
-    if not title:
-        return ""
-    title_lower = title.lower()
-    # Case 1: quoted movie name (e.g. from "Movie Name")
-    m1 = re.search(r"\b(?:from\s+movie|from\s+ost|from\s+soundtrack|from|movie|ost|soundtrack)\s*[:\"]?\s*[\"“](.+?)[\"”]", title_lower)
-    if m1:
-        return clean_string(m1.group(1))
-    # Case 2: unquoted movie name inside parentheses/brackets (e.g. (from Movie Name))
-    m2 = re.search(r"\b(?:from\s+movie|from\s+ost|from\s+soundtrack|from|movie|ost|soundtrack)\s*[:]?\s*(.+?)(?=\s*[)\]}])", title_lower)
-    if m2:
-        return clean_string(m2.group(1))
-    return ""
-
 def clean_title(title):
     if not title:
         return ""
@@ -69,7 +55,7 @@ def clean_title(title):
     title = title.lower()
     # 1. Strip features in parentheses/brackets: (feat. ...), [feat. ...]
     title = re.sub(r"\s*[([{-]\s*(?:feat|featuring|ft|with|prod)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
-    title = re.sub(r"\b(?:feat|featuring|ft|with|prod)\b.*", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\b(?:feat|featuring|ft|prod)\b.*", "", title, flags=re.IGNORECASE)
     
     # 2. Strip remaster / version / edit in parentheses/brackets
     keywords = (
@@ -84,73 +70,40 @@ def clean_title(title):
     
     return clean_string(title)
 
-def verify_match(target_artist, target_title, result, threshold=0.80):
+def title_matches(target_title, result, threshold=85):
     """
-    Checks if a search result resembles the target_artist and target_title.
-    result is a dict returned by ytmusicapi (filter="songs" or "videos").
-    Expected keys: 'title', 'artists'.
-    threshold controls the minimum title similarity ratio (default 0.80).
+    Checks if a search result's title is similar enough to the target title.
+    The search query already contains the artist name, so YTM's search ranking
+    handles artist relevance — we only need to verify the title matches.
     """
     res_title = result.get("title", "")
-    res_artists = [a.get("name", "") for a in result.get("artists", [])]
-    res_album = result.get("album", {}).get("name", "") if result.get("album") else ""
-    
-    clean_target_art = clean_string(target_artist)
-    clean_target_title = clean_title(target_title)
-    clean_res_title = clean_title(res_title)
-    
-    # 1. Similarity check for title
-    title_ratio = difflib.SequenceMatcher(None, clean_target_title, clean_res_title).ratio()
-    
-    # 2. Match artist
-    artist_matched = False
-    if not clean_target_art:
-        artist_matched = True
-    else:
-        # Check if target artist has components (duos/collabs like Sachet-Parampara, Sachin-Jigar)
-        artist_components = [clean_string(c) for c in re.split(r"[-–—,&]|\band\b", target_artist)]
-        artist_components = [c for c in artist_components if c]
-        
-        for ra in res_artists:
-            clean_ra = clean_string(ra)
-            if not clean_ra:
-                continue
-            # Direct match
-            if clean_target_art in clean_ra or clean_ra in clean_target_art:
-                artist_matched = True
-                break
-            # Duo/collab component match
-            if any(comp and (comp in clean_ra or clean_ra in comp) for comp in artist_components):
-                artist_matched = True
-                break
-            # Similarity
-            if difflib.SequenceMatcher(None, clean_target_art, clean_ra).ratio() > 0.7:
-                artist_matched = True
-                break
-                
-        # Fallback 1: Movie/Album name cross-verification
-        # Useful for Bollywood where Spotify credits the composer and YTM credits the singer
-        if not artist_matched:
-            target_movie = extract_movie_name(target_title)
-            if target_movie:
-                clean_res_album = clean_string(res_album)
-                clean_res_title_raw = clean_string(res_title)
-                # Check if movie matches album or is in raw title
-                if target_movie in clean_res_album or clean_res_album in target_movie or target_movie in clean_res_title_raw:
-                    artist_matched = True
-                    
-        # Fallback 2: if artist doesn't match but is present in the video title (for video uploads)
-        if not artist_matched and clean_target_art:
-            clean_raw_res_title = clean_string(res_title)
-            if clean_target_art in clean_raw_res_title:
-                artist_matched = True
-                # Strip the artist name from the result title and recalculate similarity ratio
-                stripped_res_title = clean_string(clean_res_title.replace(clean_target_art, ""))
-                title_ratio = difflib.SequenceMatcher(None, clean_target_title, stripped_res_title).ratio()
-                
-    # Accept if title is highly similar and artist matches
-    if title_ratio >= threshold and artist_matched:
+    clean_target = clean_title(target_title)
+    clean_result = clean_title(res_title)
+    ratio = fuzz.WRatio(clean_target, clean_result)
+    return ratio >= threshold
+
+def artist_matches(target_artist, result, threshold=85):
+    """
+    Checks if the target artist (or any of its collaboration components)
+    is present in the result artists list. Used for ranking preference.
+    """
+    if not target_artist:
         return True
+    res_artists = [a.get("name", "") for a in result.get("artists", [])]
+    clean_target = clean_string(target_artist)
+    
+    # Split duos/collabs to check components
+    components = [clean_string(c) for c in re.split(r"[-–—,&]|\band\b", target_artist)]
+    components = [c for c in components if c]
+    
+    for ra in res_artists:
+        clean_ra = clean_string(ra)
+        if not clean_ra:
+            continue
+        if fuzz.token_set_ratio(clean_target, clean_ra) >= threshold:
+            return True
+        if any(comp and fuzz.token_set_ratio(comp, clean_ra) >= threshold for comp in components):
+            return True
     return False
 
 def parse_num(raw):
