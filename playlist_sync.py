@@ -305,6 +305,24 @@ def get_lis_elements(items, target_video_ids):
     return lis_set_ids
 
 
+def get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set):
+    count = 0
+    for idx in range(curr_idx):
+        if current_state[idx]["videoId"] in new_video_ids_set:
+            count += 1
+    return count
+
+
+def get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=False):
+    non_deleted_count = 0
+    for idx, item in enumerate(current_state):
+        if non_deleted_count == target_idx:
+            return idx
+        if item["videoId"] in new_video_ids_set:
+            non_deleted_count += 1
+    return len(current_state) - 1 if is_move else len(current_state)
+
+
 def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title=None, existing_description=None, data_dir="data"):
     # 1. Identify truly orphaned tracks (lacking setVideoId)
     orphaned = [t for t in current_tracks if not t.get("setVideoId")]
@@ -315,12 +333,14 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
     # Filter out orphaned tracks for our state tracking since we can't move/delete them anyway
     current_state = [t for t in current_tracks if t.get("setVideoId")]
     
+    new_video_ids_set = set(new_video_ids)
+    
     # Identify remaining current tracks that we want to keep
     seen_vids = set()
     remaining_current = []
     for item in current_state:
         vid = item.get("videoId")
-        if vid and vid in new_video_ids and vid not in seen_vids:
+        if vid and vid in new_video_ids_set and vid not in seen_vids:
             seen_vids.add(vid)
             remaining_current.append(item)
             
@@ -331,14 +351,16 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
     target_remaining = sorted(remaining_current, key=lambda x: target_index_map[x["videoId"]])
     
     print("Reordering existing tracks to match target relative order...")
-    for target_rel_idx, item in enumerate(target_remaining):
+    for item in target_remaining:
         vid = item["videoId"]
         item_id = item["setVideoId"]
         curr_idx = current_state.index(item)
+        target_idx = target_index_map[vid]
         
         if item_id not in lis_set_ids:
-            if curr_idx != target_rel_idx:
-                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {target_rel_idx})...")
+            if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
+                adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
+                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
                 
                 def update_item():
                     return youtube.playlistItems().update(
@@ -351,14 +373,14 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
                                     "kind": "youtube#video",
                                     "videoId": vid
                                 },
-                                "position": target_rel_idx
+                                "position": adjusted_idx
                             }
                         }
                     ).execute()
                     
-                call(update_item, error_msg=f"Move item {item_id} to position {target_rel_idx}")
+                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}")
                 current_state.remove(item)
-                current_state.insert(target_rel_idx, item)
+                current_state.insert(adjusted_idx, item)
                 time.sleep(0.2)
                 
     # B. Insert new tracks at their correct indices (Add)
@@ -368,13 +390,14 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
         curr_idx = -1
         for idx, item in enumerate(current_state):
             # Only match items that are part of the target list (ignore to_delete items at the end)
-            if item["videoId"] == vid and idx < len(new_video_ids):
+            if item["videoId"] == vid:
                 curr_idx = idx
                 break
                 
         if curr_idx == -1:
-            # Video is not in the playlist yet -> Insert at the target index
-            print(f"Inserting new track {vid} at position {target_idx}...")
+            # Video is not in the playlist yet -> Insert at the adjusted index
+            adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=False)
+            print(f"Inserting new track {vid} at position {adjusted_idx}...")
             
             def insert_item():
                 return youtube.playlistItems().insert(
@@ -386,21 +409,48 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
                                 "kind": "youtube#video",
                                 "videoId": vid
                             },
-                            "position": target_idx
+                            "position": adjusted_idx
                         }
                     }
                 ).execute()
                 
-            res = call(insert_item, error_msg=f"Insert video {vid} at position {target_idx}")
+            res = call(insert_item, error_msg=f"Insert video {vid} at position {adjusted_idx}")
             new_item_id = res["id"]
-            current_state.insert(target_idx, {"videoId": vid, "setVideoId": new_item_id})
+            current_state.insert(adjusted_idx, {"videoId": vid, "setVideoId": new_item_id})
             time.sleep(0.2)
         else:
-            # Already in the correct position or relatively ordered
-            pass
-            
+            # Already in the playlist. Check if it is at the correct position (accounting for deletions)
+            if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
+                adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
+                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
+                item_id = current_state[curr_idx]["setVideoId"]
+                
+                def update_item():
+                    return youtube.playlistItems().update(
+                        part="snippet",
+                        body={
+                            "id": item_id,
+                            "snippet": {
+                                "playlistId": playlist_id,
+                                "resourceId": {
+                                    "kind": "youtube#video",
+                                    "videoId": vid
+                                },
+                                "position": adjusted_idx
+                            }
+                        }
+                    ).execute()
+                    
+                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}")
+                item = current_state.pop(curr_idx)
+                current_state.insert(adjusted_idx, item)
+                time.sleep(0.2)
+            else:
+                # Already in correct position relative to kept items
+                pass
+                
     # C. Execute deletions last (Remove)
-    to_delete = current_state[len(new_video_ids):]
+    to_delete = [item for item in current_state if item["videoId"] not in new_video_ids_set]
     if to_delete:
         print(f"Removing {len(to_delete)} old/duplicate tracks from YouTube Music playlist...")
         for idx, item in enumerate(to_delete):

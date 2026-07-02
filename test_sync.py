@@ -554,7 +554,7 @@ class TestSyncBot(unittest.TestCase):
                         "kind": "youtube#video",
                         "videoId": "old3"
                     },
-                    "position": 0
+                    "position": 1
                 }
             }
         )
@@ -715,6 +715,86 @@ class TestSyncBot(unittest.TestCase):
         )
         
         youtube.playlistItems().delete.assert_called_once_with(id="svid2")
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_hindi_music_delta(self, mock_sleep, mock_call):
+        youtube = MagicMock()
+        
+        # Scenario: Syncing Hindi playlist (e.g. Sajni सजनी / Dil Bechara दिल बेचारा)
+        # Current playlist state:
+        # Index 0: Sajni ("सजनी") -> video ID: "sajni_vid_123"
+        # Index 1: Dil Bechara ("दिल बेचारा") -> video ID: "bechara_vid_456"
+        # Index 2: Old track to delete -> video ID: "old_delete_vid"
+        current_tracks = [
+            {"videoId": "sajni_vid_123", "setVideoId": "svid_sajni"},
+            {"videoId": "bechara_vid_456", "setVideoId": "svid_bechara"},
+            {"videoId": "old_delete_vid", "setVideoId": "svid_delete"}
+        ]
+        
+        # Target state:
+        # 1. Move Dil Bechara ("bechara_vid_456") to index 0
+        # 2. Insert new track (Tauba Tauba - "ताउबा ताउबा" -> "tauba_vid_789") at index 1
+        # 3. Move Sajni ("sajni_vid_123") to index 2
+        target_video_ids = ["bechara_vid_456", "tauba_vid_789", "sajni_vid_123"]
+        
+        # Mocks
+        insert_mock = MagicMock()
+        insert_mock.execute.return_value = {"id": "svid_tauba"}
+        youtube.playlistItems().insert.return_value = insert_mock
+        
+        delete_mock = MagicMock()
+        youtube.playlistItems().delete.return_value = delete_mock
+        
+        update_mock = MagicMock()
+        youtube.playlistItems().update.return_value = update_mock
+        youtube.playlists().update.return_value = update_mock
+        
+        # Run sync_playlist
+        sync_playlist(
+            youtube,
+            playlist_id="pl_hindi_123",
+            current_tracks=current_tracks,
+            new_video_ids=target_video_ids,
+            target_title="Spotify Weekly India Top 200",
+            target_description="desc",
+            existing_title="Spotify Weekly India Top 200"
+        )
+        
+        # Verification:
+        # A. Add: "tauba_vid_789" was inserted at position 1
+        youtube.playlistItems().insert.assert_called_once_with(
+            part="snippet",
+            body={
+                "snippet": {
+                    "playlistId": "pl_hindi_123",
+                    "resourceId": {
+                        "kind": "youtube#video",
+                        "videoId": "tauba_vid_789"
+                    },
+                    "position": 1
+                }
+            }
+        )
+        
+        # B. Delete: "svid_delete" (old_delete_vid) was removed
+        youtube.playlistItems().delete.assert_called_once_with(id="svid_delete")
+        
+        # C. Reposition: "bechara_vid_456" was moved to position 0 (since "sajni_vid_123" stays in LIS)
+        youtube.playlistItems().update.assert_called_once_with(
+            part="snippet",
+            body={
+                "id": "svid_bechara",
+                "snippet": {
+                    "playlistId": "pl_hindi_123",
+                    "resourceId": {
+                        "kind": "youtube#video",
+                        "videoId": "bechara_vid_456"
+                    },
+                    "position": 0
+                }
+            }
+        )
 
     @patch("sync.parse_args")
     @patch("sync.scrape_kworb")

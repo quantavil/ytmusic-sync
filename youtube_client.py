@@ -72,7 +72,7 @@ def _classify_http_error(e: HttpError):
         return "quota"
     if status in (401,) or "invalid_grant" in reason_str or "unauthorized" in reason_str:
         return "auth"
-    if status in (429, 500, 502, 503, 504):
+    if status in (409, 429, 500, 502, 503, 504) or "service_unavailable" in reason_str or "the operation was aborted" in reason_str:
         return "transient"
     return "fatal"
 
