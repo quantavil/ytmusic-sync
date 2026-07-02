@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys
-from ytmusicapi import YTMusic
+from ytmusicapi import YTMusic, setup
 
 def main():
     print("====================================================")
@@ -23,7 +23,7 @@ def main():
     print("\nPaste your request headers below (press Ctrl+D or Ctrl+Z on Windows followed by Enter when done):\n")
     
     try:
-        YTMusic.setup(filepath="browser.json")
+        setup(filepath="browser.json")
         print("\n🎉 Success! Created 'browser.json' containing your browser authentication.")
         print("You can now run sync.py.")
     except Exception as e:

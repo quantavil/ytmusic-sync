@@ -47,3 +47,4 @@ ytmusic-sync/
 - [2026-07-02] `clean_title()` stripped the ordinary word "with" anywhere in un-bracketed titles. → Fixed by removing "with" from the un-delimited regex.
 - [2026-07-02] `remove_playlist_items()` was sent all items at once, exceeding the YTM API limit of 50. → Fixed by chunking playlist removals in batches of 50.
 - [2026-07-02] Tracks with a single anchor tag on Kworb had empty artists. → Fixed by parsing raw text inside the td and splitting by `" - "` to extract the artist.
+- [2026-07-02] `auth.py` was calling `YTMusic.setup()` which is no longer a method on the `YTMusic` class in newer `ytmusicapi` versions. → Fixed by importing and calling the module-level `setup` function.
