@@ -2,11 +2,10 @@ import time
 import random
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 from utils import retry_operation, title_matches, artist_matches, clean_string
 from youtube_client import call
-
-RANK_SHIFT_THRESHOLD = 5
 
 def load_ytmusic_cache(data_dir):
     cache_by_id = {}
@@ -53,6 +52,7 @@ def should_skip_sync(out_file, week_date, force, dry_run):
 def find_or_create_playlist(youtube, target_title, target_description):
     print(f"Searching for existing playlist: '{target_title}'...")
     playlist_id = None
+    existing_title = None
     existing_description = None
     next_page_token = None
     
@@ -72,6 +72,7 @@ def find_or_create_playlist(youtube, target_title, target_description):
             title = pl["snippet"]["title"]
             if title.strip().lower() == target_title.strip().lower():
                 playlist_id = pl["id"]
+                existing_title = title
                 existing_description = pl["snippet"].get("description", "")
                 print(f"Found existing playlist: {title} (ID: {playlist_id})")
                 break
@@ -105,6 +106,7 @@ def find_or_create_playlist(youtube, target_title, target_description):
         playlist_id = res["id"]
         print(f"Created playlist ID: {playlist_id}")
         is_new_playlist = True
+        existing_title = target_title
         existing_description = target_description
         
     if is_new_playlist:
@@ -138,7 +140,7 @@ def find_or_create_playlist(youtube, target_title, target_description):
                 
         print(f"Current playlist has {len(current_tracks)} tracks.")
         
-    return playlist_id, current_tracks, existing_description
+    return playlist_id, current_tracks, existing_title, existing_description
 
 def _search_and_match(yt, query, title, artist, filter_type):
     """
@@ -264,7 +266,6 @@ def _log_orphaned_tracks(data_dir, playlist_id, orphaned):
         except Exception as e:
             print(f"Warning: Failed to rotate orphaned_tracks.log: {e}")
             
-    from datetime import datetime, timezone
     with open(log_path, "a", encoding="utf-8") as f:
         ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         for t in orphaned:
@@ -272,57 +273,107 @@ def _log_orphaned_tracks(data_dir, playlist_id, orphaned):
     print(f"⚠️ Logged {len(orphaned)} orphaned/unremovable track entries to {log_path}")
 
 
-def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_description=None, data_dir="data"):
+def get_lis_elements(items, target_video_ids):
+    # Map each videoId to its target index
+    target_index_map = {vid: idx for idx, vid in enumerate(target_video_ids)}
+    
+    # We want to find the LIS of items based on their target indices
+    valid_items = [item for item in items if item.get("videoId") in target_index_map]
+    if not valid_items:
+        return set()
+        
+    n = len(valid_items)
+    dp = [1] * n
+    parent = [-1] * n
+    
+    for i in range(1, n):
+        idx_i = target_index_map[valid_items[i]["videoId"]]
+        for j in range(i):
+            idx_j = target_index_map[valid_items[j]["videoId"]]
+            if idx_j < idx_i and dp[j] + 1 > dp[i]:
+                dp[i] = dp[j] + 1
+                parent[i] = j
+                
+    max_len = max(dp)
+    curr_idx = dp.index(max_len)
+    
+    lis_set_ids = set()
+    while curr_idx != -1:
+        lis_set_ids.add(valid_items[curr_idx]["setVideoId"])
+        curr_idx = parent[curr_idx]
+        
+    return lis_set_ids
+
+
+def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title=None, existing_description=None, data_dir="data"):
     # 1. Identify truly orphaned tracks (lacking setVideoId)
     orphaned = [t for t in current_tracks if not t.get("setVideoId")]
     if orphaned:
         print(f"⚠️ Warning: {len(orphaned)} tracks lack setVideoId and cannot be managed.")
         _log_orphaned_tracks(data_dir, playlist_id, orphaned)
         
-    # 2. Identify deletions and duplicates
-    seen_vids = set()
-    to_delete = []
-    remaining_current = []
+    # Filter out orphaned tracks for our state tracking since we can't move/delete them anyway
+    current_state = [t for t in current_tracks if t.get("setVideoId")]
     
-    for item in current_tracks:
+    # Identify remaining current tracks that we want to keep
+    seen_vids = set()
+    remaining_current = []
+    for item in current_state:
         vid = item.get("videoId")
-        item_id = item.get("setVideoId")
-        if not item_id:
-            continue
-        if not vid or vid not in new_video_ids or vid in seen_vids:
-            to_delete.append(item_id)
-        else:
+        if vid and vid in new_video_ids and vid not in seen_vids:
             seen_vids.add(vid)
             remaining_current.append(item)
             
-    # A. Execute deletions
-    if to_delete:
-        print(f"Removing {len(to_delete)} old/duplicate tracks from YouTube Music playlist...")
-        for idx, item_id in enumerate(to_delete):
-            print(f"Removing track {idx+1}/{len(to_delete)} (ID: {item_id})...")
-            def delete_item():
-                return youtube.playlistItems().delete(id=item_id).execute()
-            call(delete_item, error_msg=f"Delete playlist item {item_id}")
-            time.sleep(0.2)
-        print("Removal of old tracks complete.")
-    else:
-        print("No tracks need to be removed.")
-        
-    # B. Insert new tracks and reorder shifted tracks
-    # We maintain current_state in memory to track current playlist positions.
-    current_state = list(remaining_current)
+    # A. Reorder the remaining current tracks first to match their relative target order.
+    # We use the Longest Increasing Subsequence (LIS) to minimize the number of move operations.
+    target_index_map = {vid: idx for idx, vid in enumerate(new_video_ids)}
+    lis_set_ids = get_lis_elements(remaining_current, new_video_ids)
+    target_remaining = sorted(remaining_current, key=lambda x: target_index_map[x["videoId"]])
     
+    print("Reordering existing tracks to match target relative order...")
+    for target_rel_idx, item in enumerate(target_remaining):
+        vid = item["videoId"]
+        item_id = item["setVideoId"]
+        curr_idx = current_state.index(item)
+        
+        if item_id not in lis_set_ids:
+            if curr_idx != target_rel_idx:
+                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {target_rel_idx})...")
+                
+                def update_item():
+                    return youtube.playlistItems().update(
+                        part="snippet",
+                        body={
+                            "id": item_id,
+                            "snippet": {
+                                "playlistId": playlist_id,
+                                "resourceId": {
+                                    "kind": "youtube#video",
+                                    "videoId": vid
+                                },
+                                "position": target_rel_idx
+                            }
+                        }
+                    ).execute()
+                    
+                call(update_item, error_msg=f"Move item {item_id} to position {target_rel_idx}")
+                current_state.remove(item)
+                current_state.insert(target_rel_idx, item)
+                time.sleep(0.2)
+                
+    # B. Insert new tracks at their correct indices (Add)
     print(f"Synchronizing playlist content and order (Target tracks: {len(new_video_ids)})...")
     for target_idx, vid in enumerate(new_video_ids):
         # Find where this video is in our current_state in memory
         curr_idx = -1
         for idx, item in enumerate(current_state):
-            if item["videoId"] == vid:
+            # Only match items that are part of the target list (ignore to_delete items at the end)
+            if item["videoId"] == vid and idx < len(new_video_ids):
                 curr_idx = idx
                 break
                 
         if curr_idx == -1:
-            # Case 1: Video is not in the playlist -> Insert at the target index
+            # Video is not in the playlist yet -> Insert at the target index
             print(f"Inserting new track {vid} at position {target_idx}...")
             
             def insert_item():
@@ -344,47 +395,33 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
             new_item_id = res["id"]
             current_state.insert(target_idx, {"videoId": vid, "setVideoId": new_item_id})
             time.sleep(0.2)
-            
         else:
-            # Case 2: Video is in the playlist -> Check if we need to update its position
-            shift = abs(curr_idx - target_idx)
-            if shift > RANK_SHIFT_THRESHOLD:
-                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {target_idx}, shift: {shift} > threshold {RANK_SHIFT_THRESHOLD})...")
-                item_id = current_state[curr_idx]["setVideoId"]
-                
-                def update_item():
-                    return youtube.playlistItems().update(
-                        part="snippet",
-                        body={
-                            "id": item_id,
-                            "snippet": {
-                                "playlistId": playlist_id,
-                                "resourceId": {
-                                    "kind": "youtube#video",
-                                    "videoId": vid
-                                },
-                                "position": target_idx
-                            }
-                        }
-                    ).execute()
-                    
-                call(update_item, error_msg=f"Move item {item_id} to position {target_idx}")
-                # Update in-memory state: move the item
-                item = current_state.pop(curr_idx)
-                current_state.insert(target_idx, item)
-                time.sleep(0.2)
-            else:
-                # Do nothing, leave it at curr_idx (it's close enough!)
-                pass
-                
+            # Already in the correct position or relatively ordered
+            pass
+            
+    # C. Execute deletions last (Remove)
+    to_delete = current_state[len(new_video_ids):]
+    if to_delete:
+        print(f"Removing {len(to_delete)} old/duplicate tracks from YouTube Music playlist...")
+        for idx, item in enumerate(to_delete):
+            item_id = item["setVideoId"]
+            print(f"Removing track {idx+1}/{len(to_delete)} (ID: {item_id})...")
+            def delete_item():
+                return youtube.playlistItems().delete(id=item_id).execute()
+            call(delete_item, error_msg=f"Delete playlist item {item_id}")
+            time.sleep(0.2)
+        print("Removal of old tracks complete.")
+    else:
+        print("No tracks need to be removed.")
+        
     print("Playlist content and order synchronization complete.")
     
-    # C. Update description to match the new Week Date
-    if existing_description == target_description:
-        print("Playlist description is already up to date. Skipping description update to save quota.")
+    # D. Update title and/or description if casing or content differs
+    if existing_title == target_title and existing_description == target_description:
+        print("Playlist title and description are already up to date. Skipping update to save quota.")
         return
         
-    print("Updating playlist description...")
+    print("Updating playlist title and description...")
     def edit_pl():
         return youtube.playlists().update(
             part="snippet",
@@ -397,5 +434,5 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
             }
         ).execute()
         
-    call(edit_pl, attempts=3, delay=2, error_msg="Update playlist description")
-    print("Description update completed.")
+    call(edit_pl, error_msg="Update playlist details")
+    print("Playlist details update completed.")

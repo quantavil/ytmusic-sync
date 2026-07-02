@@ -23,8 +23,10 @@ echo
 echo "===================================================="
 if [ $GLOBAL_STATUS -eq 0 ] && [ $INDIA_STATUS -eq 0 ]; then
     echo "🎉 SUCCESS: Both charts synchronized successfully!"
+    EXIT_CODE=0
 else
     echo "❌ ERROR: One or more sync operations failed."
+    EXIT_CODE=1
 fi
 echo "===================================================="
 echo
@@ -32,3 +34,5 @@ echo
 if [ -t 0 ]; then
     read -p "Press [Enter] to close this window..."
 fi
+
+exit $EXIT_CODE

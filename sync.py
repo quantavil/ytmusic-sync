@@ -56,12 +56,32 @@ def parse_args():
     )
     return parser.parse_args()
 
+def save_cache_file(out_file, chart, week_date, partial):
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    if partial:
+        print(f"ℹ️ Saving partial data to {out_file} to preserve resolved IDs, but marking as incomplete.")
+        chart_copy = dict(chart)
+        chart_copy["weekDate"] = f"{week_date}-partial"
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(chart_copy, f, indent=2, ensure_ascii=False)
+    else:
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(chart, f, indent=2, ensure_ascii=False)
+        print(f"Saved updated data to {out_file}")
+
+
 def main():
     args = parse_args()
     print(f"🚀 Starting YouTube Music sync for country: {args.country.upper()}")
     out_file = Path(args.data_dir) / f"{args.country}.json"
     
     from youtube_client import AuthError, QuotaExceededError
+    
+    chart = None
+    week_date = None
+    resolved_any = False
+    sync_success = False
+    
     try:
         # 1. Scrape chart data from Kworb
         chart = scrape_kworb(args.country)
@@ -92,6 +112,7 @@ def main():
         print(f"Loaded cache from existing JSONs: {len(cache_by_id)} unique IDs, {len(cache_by_name)} name pairs.")
         
         tracks, resolved_count, cached_count, failed_count = resolve_track_ids(yt_search, tracks, cache_by_id, cache_by_name)
+        resolved_any = (resolved_count > 0)
         
         # Deduplicate video IDs while preserving ranking order to prevent YTM API failure
         seen = set()
@@ -134,28 +155,16 @@ def main():
             target_title = f"Spotify Weekly {country_name} Top 200"
             target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
             
-            playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, target_title, target_description)
+            playlist_id, current_tracks, existing_title, existing_description = find_or_create_playlist(youtube, target_title, target_description)
             
             # 5. Sync Playlist
-            sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_description, data_dir=args.data_dir)
+            sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title, existing_description, data_dir=args.data_dir)
             
             playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
             print(f"\n🎉 Sync Complete! Playlist URL: {playlist_url}")
         
-        # Save the updated chart data with resolved IDs to file (delayed to final step).
-        # Write cache even on partial resolution failure to preserve resolved IDs,
-        # but suffix the weekDate to ensure it retries on the next execution.
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-        if partial_failure:
-            print(f"ℹ️ Saving partial data to {out_file} to preserve resolved IDs, but marking as incomplete.")
-            chart_copy = dict(chart)
-            chart_copy["weekDate"] = f"{week_date}-partial"
-            with open(out_file, "w", encoding="utf-8") as f:
-                json.dump(chart_copy, f, indent=2, ensure_ascii=False)
-        else:
-            with open(out_file, "w", encoding="utf-8") as f:
-                json.dump(chart, f, indent=2, ensure_ascii=False)
-            print(f"Saved updated data to {out_file}")
+        save_cache_file(out_file, chart, week_date, partial=partial_failure)
+        sync_success = True
         
     except AuthError as e:
         print(f"\n❌ Authentication Failure: {e}")
@@ -171,6 +180,14 @@ def main():
         print(f"\n❌ Unexpected Error: {e}")
         import sys
         sys.exit(1)
+    finally:
+        # Save cache if we resolved any new tracks but did not complete the sync.
+        # We must mark it as partial because the sync did not complete successfully.
+        if chart and resolved_any and not args.dry_run and not sync_success:
+            try:
+                save_cache_file(out_file, chart, week_date, partial=True)
+            except Exception as save_err:
+                print(f"⚠️ Warning: Failed to save partial cache on failure recovery: {save_err}")
 
 if __name__ == "__main__":
     main()

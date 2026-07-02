@@ -13,6 +13,23 @@ from playlist_sync import (
 )
 from scraper import parse_kworb_html
 
+def make_mock_html(rows_html, headers=None, date="2026-07-01"):
+    if headers is None:
+        headers = ["Pos", "P+", "Artist and Title", "Wks", "Pk", "(x?)", "Streams", "Streams+", "Total"]
+    headers_html = "".join(f"<th>{h}</th>" for h in headers)
+    return f"""
+    <html>
+    <head><title>Spotify Weekly Chart {date}</title></head>
+    <body>
+    <span class="pagetitle">Spotify Weekly Chart - {date}</span>
+    <table>
+        <tr>{headers_html}</tr>
+        {rows_html}
+    </table>
+    </body>
+    </html>
+    """
+
 class TestSyncBot(unittest.TestCase):
 
     def test_clean_string(self):
@@ -43,6 +60,8 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(clean_title("On The Floor (Radio Edit)"), "on the floor")
         # Strip from movie
         self.assertEqual(clean_title('I Knew It, I Knew You (From "Toy Story 5")'), "i knew it i knew you")
+        # Preserve legitimate "from" inside parentheses
+        self.assertEqual(clean_title("Song (From Now On)"), "song from now on")
         # Strip pipe '|' metadata
         self.assertEqual(clean_title("Labon Ko - (Lyrics) | Bhool Bhulaiyaa | Pritam | K.K."), "labon ko")
         # Preserve "with" as an ordinary word in titles
@@ -179,49 +198,31 @@ class TestSyncBot(unittest.TestCase):
             self.assertFalse(should_skip_sync(temp_cache, "2026-07-08", force=False, dry_run=False))
 
     def test_parse_kworb_html_success(self):
-        mock_html = """
-        <html>
-        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
-        <body>
-        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
-        <table>
-            <tr>
-                <th>Pos</th>
-                <th>P+</th>
-                <th>Artist and Title</th>
-                <th>Wks</th>
-                <th>Pk</th>
-                <th>(x?)</th>
-                <th>Streams</th>
-                <th>Streams+</th>
-                <th>Total</th>
-            </tr>
-            <tr>
-                <td>1</td>
-                <td>0</td>
-                <td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td>
-                <td>10</td>
-                <td>1</td>
-                <td>x</td>
-                <td>1,500,000</td>
-                <td>100,000</td>
-                <td>15,000,000</td>
-            </tr>
-            <tr>
-                <td>2</td>
-                <td>=</td>
-                <td><a href="artist/2.html">Artist B</a> - <a href="track/spotifyid2.html">Title B</a></td>
-                <td>5</td>
-                <td>2</td>
-                <td></td>
-                <td>1,200,000</td>
-                <td>50,000</td>
-                <td>6,000,000</td>
-            </tr>
-        </table>
-        </body>
-        </html>
+        rows = """
+        <tr>
+            <td>1</td>
+            <td>0</td>
+            <td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td>
+            <td>10</td>
+            <td>1</td>
+            <td>x</td>
+            <td>1,500,000</td>
+            <td>100,000</td>
+            <td>15,000,000</td>
+        </tr>
+        <tr>
+            <td>2</td>
+            <td>=</td>
+            <td><a href="artist/2.html">Artist B</a> - <a href="track/spotifyid2.html">Title B</a></td>
+            <td>5</td>
+            <td>2</td>
+            <td></td>
+            <td>1,200,000</td>
+            <td>50,000</td>
+            <td>6,000,000</td>
+        </tr>
         """
+        mock_html = make_mock_html(rows)
         
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(parsed["weekDate"], "2026-07-01")
@@ -261,34 +262,19 @@ class TestSyncBot(unittest.TestCase):
             parse_kworb_html(mock_html_no_date, "global")
 
     def test_parse_kworb_html_fallback(self):
-        mock_html = """
-        <html>
-        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
-        <body>
-        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
-        <table>
-            <tr>
-                <th>Unrecognized1</th>
-                <th>Unrecognized2</th>
-                <th>Unrecognized3</th>
-                <th>Unrecognized4</th>
-                <th>Unrecognized5</th>
-                <th>Unrecognized6</th>
-                <th>Unrecognized7</th>
-            </tr>
-            <tr>
-                <td>10</td>
-                <td>+5</td>
-                <td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td>
-                <td>12</td>
-                <td>3</td>
-                <td>unused</td>
-                <td>2,000,000</td>
-            </tr>
-        </table>
-        </body>
-        </html>
+        headers = ["Unrecognized1", "Unrecognized2", "Unrecognized3", "Unrecognized4", "Unrecognized5", "Unrecognized6", "Unrecognized7"]
+        rows = """
+        <tr>
+            <td>10</td>
+            <td>+5</td>
+            <td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td>
+            <td>12</td>
+            <td>3</td>
+            <td>unused</td>
+            <td>2,000,000</td>
+        </tr>
         """
+        mock_html = make_mock_html(rows, headers)
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(parsed["weekDate"], "2026-07-01")
         self.assertEqual(len(parsed["tracks"]), 1)
@@ -302,34 +288,19 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(track["streams"], 2000000)
 
     def test_parse_kworb_html_single_anchor(self):
-        mock_html = """
-        <html>
-        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
-        <body>
-        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
-        <table>
-            <tr>
-                <th>Pos</th>
-                <th>P+</th>
-                <th>Artist and Title</th>
-                <th>Wks</th>
-                <th>Pk</th>
-                <th>(x?)</th>
-                <th>Streams</th>
-            </tr>
-            <tr>
-                <td>1</td>
-                <td>0</td>
-                <td>Artist A - <a href="track/spotifyid1.html">Title A</a></td>
-                <td>10</td>
-                <td>1</td>
-                <td>x</td>
-                <td>1,500,000</td>
-            </tr>
-        </table>
-        </body>
-        </html>
+        headers = ["Pos", "P+", "Artist and Title", "Wks", "Pk", "(x?)", "Streams"]
+        rows = """
+        <tr>
+            <td>1</td>
+            <td>0</td>
+            <td>Artist A - <a href="track/spotifyid1.html">Title A</a></td>
+            <td>10</td>
+            <td>1</td>
+            <td>x</td>
+            <td>1,500,000</td>
+        </tr>
         """
+        mock_html = make_mock_html(rows, headers)
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(len(parsed["tracks"]), 1)
         track = parsed["tracks"][0]
@@ -338,22 +309,13 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(track["spotifyId"], "spotifyid1")
 
     def test_parse_kworb_html_low_count(self):
-        mock_html = """
-        <html>
-        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
-        <body>
-        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
-        <table>
-            <tr>
-                <th>Pos</th><th>P+</th><th>Artist and Title</th><th>Wks</th><th>Pk</th><th>(x?)</th><th>Streams</th>
-            </tr>
-            <tr>
-                <td>1</td><td>0</td><td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td><td>10</td><td>1</td><td>x</td><td>1,500,000</td>
-            </tr>
-        </table>
-        </body>
-        </html>
+        headers = ["Pos", "P+", "Artist and Title", "Wks", "Pk", "(x?)", "Streams"]
+        rows = """
+        <tr>
+            <td>1</td><td>0</td><td><a href="artist/1.html">Artist A</a> - <a href="track/spotifyid1.html">Title A</a></td><td>10</td><td>1</td><td>x</td><td>1,500,000</td>
+        </tr>
         """
+        mock_html = make_mock_html(rows, headers)
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(len(parsed["tracks"]), 1)
 
@@ -387,12 +349,13 @@ class TestSyncBot(unittest.TestCase):
         }
         youtube.playlistItems().list.return_value = list_items_mock
         
-        playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
+        playlist_id, current_tracks, existing_title, existing_description = find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
         
         self.assertEqual(playlist_id, "pl_123")
         self.assertEqual(len(current_tracks), 1)
         self.assertEqual(current_tracks[0]["videoId"], "vid1")
         self.assertEqual(current_tracks[0]["setVideoId"], "svid1")
+        self.assertEqual(existing_title, "Spotify Weekly Global Top 200")
         self.assertEqual(existing_description, "desc")
         youtube.playlists().list.assert_called_once_with(
             mine=True, part="snippet,id", maxResults=50, pageToken=None
@@ -414,10 +377,11 @@ class TestSyncBot(unittest.TestCase):
         insert_playlist_mock.execute.return_value = {"id": "new_pl_456"}
         youtube.playlists().insert.return_value = insert_playlist_mock
         
-        playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
+        playlist_id, current_tracks, existing_title, existing_description = find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
         
         self.assertEqual(playlist_id, "new_pl_456")
         self.assertEqual(current_tracks, [])
+        self.assertEqual(existing_title, "Spotify Weekly Global Top 200")
         self.assertEqual(existing_description, "desc")
         youtube.playlists().list.assert_called_once()
         youtube.playlists().insert.assert_called_once_with(
@@ -535,8 +499,7 @@ class TestSyncBot(unittest.TestCase):
         tracks = [{"spotifyId": "sp1", "artist": "Nobody", "title": "Nothing"}]
         resolved, resolved_count, cached_count, failed_count = resolve_track_ids(yt, tracks, {}, {})
 
-        self.assertNotIn("ytMusicId", resolved[0]) if "ytMusicId" not in resolved[0] else \
-            self.assertEqual(resolved[0].get("ytMusicId"), None)
+        self.assertNotIn("ytMusicId", resolved[0])
         self.assertEqual(resolved_count, 0)
         self.assertEqual(failed_count, 1)
 
@@ -574,7 +537,8 @@ class TestSyncBot(unittest.TestCase):
             current_tracks=current_tracks,
             new_video_ids=target_tracks,
             target_title="Spotify Weekly Global Top 200",
-            target_description="desc"
+            target_description="desc",
+            existing_title="Spotify Weekly Global Top 200"
         )
         
         youtube.playlistItems().delete.assert_called_once_with(id="svid1")
@@ -583,14 +547,14 @@ class TestSyncBot(unittest.TestCase):
         youtube.playlistItems().update.assert_called_once_with(
             part="snippet",
             body={
-                "id": "svid2",
+                "id": "svid3",
                 "snippet": {
                     "playlistId": "pl_123",
                     "resourceId": {
                         "kind": "youtube#video",
-                        "videoId": "old2"
+                        "videoId": "old3"
                     },
-                    "position": 7
+                    "position": 0
                 }
             }
         )
@@ -635,7 +599,8 @@ class TestSyncBot(unittest.TestCase):
             current_tracks=current_tracks,
             new_video_ids=target_tracks,
             target_title="Spotify Weekly Global Top 200",
-            target_description="desc"
+            target_description="desc",
+            existing_title="Spotify Weekly Global Top 200"
         )
         
         # Expect exactly 2 updates (one for H and one for A).
@@ -657,25 +622,16 @@ class TestSyncBot(unittest.TestCase):
             youtube_call(failing_func, attempts=1)
 
     def test_parse_kworb_html_multiple_artists(self):
-        mock_html = """
-        <html>
-        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
-        <body>
-        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
-        <table>
-            <tr>
-                <th>Pos</th><th>P+</th><th>Artist and Title</th><th>Wks</th><th>Pk</th><th>(x?)</th><th>Streams</th>
-            </tr>
-            <tr>
-                <td>1</td>
-                <td>0</td>
-                <td><a href="artist/a.html">Artist A</a> & <a href="artist/b.html">Artist B</a> - <a href="track/spotifyid1.html">Title A</a></td>
-                <td>10</td><td>1</td><td>x</td><td>1,500,000</td>
-            </tr>
-        </table>
-        </body>
-        </html>
+        headers = ["Pos", "P+", "Artist and Title", "Wks", "Pk", "(x?)", "Streams"]
+        rows = """
+        <tr>
+            <td>1</td>
+            <td>0</td>
+            <td><a href="artist/a.html">Artist A</a> & <a href="artist/b.html">Artist B</a> - <a href="track/spotifyid1.html">Title A</a></td>
+            <td>10</td><td>1</td><td>x</td><td>1,500,000</td>
+        </tr>
         """
+        mock_html = make_mock_html(rows, headers)
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(len(parsed["tracks"]), 1)
         track = parsed["tracks"][0]
@@ -702,6 +658,7 @@ class TestSyncBot(unittest.TestCase):
             new_video_ids=target_tracks,
             target_title="Spotify Weekly Global Top 200",
             target_description="desc",
+            existing_title="Spotify Weekly Global Top 200",
             existing_description="desc"  # identical to target_description
         )
         
@@ -753,6 +710,7 @@ class TestSyncBot(unittest.TestCase):
             new_video_ids=new_video_ids,
             target_title="Spotify Weekly Global Top 200",
             target_description="desc",
+            existing_title="Spotify Weekly Global Top 200",
             existing_description="desc"
         )
         

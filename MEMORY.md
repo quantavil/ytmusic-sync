@@ -54,3 +54,6 @@ ytmusic-sync/
 - [2026-07-02] Low-level helper retry_operation terminated program directly with sys.exit. → Fixed by raising exceptions instead, handled globally in entrypoint main().
 - [2026-07-02] CI workflow lacked data directory persistence. → Added actions/cache workflow steps for data/ folder caching.
 - [2026-07-02] auth_google.py crashed on network blips during verify step, and sync.sh blocked non-interactively. → Wrapped verify step in try-except; added TTY check before sync.sh read prompt.
+- [2026-07-02] Deleted import of Path in youtube_client.py during refactoring. → Restored Path import.
+- [2026-07-02] Swapping delete-first logic for add-then-remove and removing position thresholds created index shifting bugs. → Fixed by implementing Longest Increasing Subsequence (LIS) optimal relative reordering prior to insertions.
+

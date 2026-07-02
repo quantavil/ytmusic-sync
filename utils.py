@@ -13,7 +13,7 @@ COUNTRIES = {
 
 BASE_URL = "https://kworb.net/spotify/country"
 
-def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=False, fatal=True, error_msg="Operation failed"):
+def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=False, fatal=True, error_msg="Operation failed", retryable_exceptions=(Exception,)):
     current_delay = delay
     last_exception = None
     for attempt in range(attempts):
@@ -21,6 +21,9 @@ def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=
             return func()
         except Exception as e:
             last_exception = e
+            is_retryable = any(isinstance(e, t) for t in retryable_exceptions)
+            if not is_retryable:
+                raise
             if attempt < attempts - 1:
                 wait_time = delay * (attempt + 1) if linear_backoff else current_delay
                 print(f"  ⚠ {error_msg} (attempt {attempt + 1}/{attempts}) failed: {e}. Retrying in {wait_time}s...")
@@ -72,10 +75,14 @@ def clean_title(title):
     # 2. Strip remaster / version / edit in parentheses/brackets
     keywords = (
         r"remaster|remastered|mix|edit|version|ver|explicit|clean|cover|"
-        r"bonus track|from\s+.*|audio|video|music\s+video|lyric|lyrics|"
+        r"bonus track|audio|video|music\s+video|lyric|lyrics|"
         r"official|movie|ost|soundtrack|unplugged|acoustic|lofi|reprise"
     )
-    title = re.sub(r"\s*[([{]\s*(?:.*?\s+)?(?:" + keywords + r")\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
+    from_pattern = r"from\s+(?:[\"'\u201c\u201d\u2018\u2019].+?[\"'\u201c\u201d\u2018\u2019]|(?:the\s+)?(?:movie|soundtrack|ost|motion\s+picture)\b.*)"
+    
+    # Combined pattern for parentheses/brackets (includes from_pattern, doesn't force \b at the end)
+    pattern_in_brackets = r"(?:" + keywords + r")\b|" + from_pattern
+    title = re.sub(r"\s*[([{]\s*(?:.*?\s+)?(?:" + pattern_in_brackets + r").*?[)\]}]", "", title, flags=re.IGNORECASE)
     
     # 3. Strip hyphenated/slashed suffixes
     title = re.sub(r"\s*[-|/]\s*(?:.*?\s+)?(?:" + keywords + r"|single|album|radio|live)\b.*", "", title, flags=re.IGNORECASE)

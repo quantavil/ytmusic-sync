@@ -13,7 +13,9 @@ Handles:
 """
 import sys
 import time
+import requests
 from pathlib import Path
+from utils import retry_operation
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -75,12 +77,17 @@ def _classify_http_error(e: HttpError):
     return "fatal"
 
 
+class TransientAPIError(RuntimeError):
+    """Temporary wrapper for transient API / network errors to trigger retries."""
+    pass
+
+
 def call(func, attempts=3, delay=2, error_msg="YouTube API call"):
     """
     Executes func() (a zero-arg callable wrapping a googleapiclient .execute()
     call) with classification-aware retry.
     """
-    for attempt in range(attempts):
+    def run_and_classify():
         try:
             return func()
         except HttpError as e:
@@ -92,19 +99,25 @@ def call(func, attempts=3, delay=2, error_msg="YouTube API call"):
                 )
             if kind == "auth":
                 raise AuthError(f"{error_msg}: authorization error, re-run auth_google.py. ({e})")
-            if kind == "transient" and attempt < attempts - 1:
-                wait = delay * (attempt + 1)
-                print(f"  ⚠ {error_msg} (attempt {attempt + 1}/{attempts}) transient error: {e}. Retrying in {wait}s...")
-                time.sleep(wait)
-                continue
+            if kind == "transient":
+                raise TransientAPIError(str(e)) from e
             raise
         except RefreshError as e:
             raise AuthError(f"{error_msg}: credentials refresh failed: {e}. Re-run auth_google.py.")
-        except Exception as e:
-            # Network-level errors etc. — treat as transient.
-            if attempt < attempts - 1:
-                wait = delay * (attempt + 1)
-                print(f"  ⚠ {error_msg} (attempt {attempt + 1}/{attempts}) failed: {e}. Retrying in {wait}s...")
-                time.sleep(wait)
-                continue
-            raise
+        except (OSError, requests.exceptions.RequestException) as e:
+            raise TransientAPIError(str(e)) from e
+
+    try:
+        return retry_operation(
+            run_and_classify,
+            attempts=attempts,
+            delay=delay,
+            linear_backoff=True,
+            fatal=True,
+            error_msg=error_msg,
+            retryable_exceptions=(TransientAPIError,)
+        )
+    except TransientAPIError as e:
+        if e.__cause__:
+            raise e.__cause__
+        raise
