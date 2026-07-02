@@ -193,7 +193,10 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
                     if matched_result:
                         yt_id = matched_result.get("videoId")
                         if yt_id:
-                            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' → {yt_id} (result {matched_idx + 1})")
+                            res_title = matched_result.get("title", "")
+                            res_artists = ", ".join([a.get("name", "") for a in matched_result.get("artists", []) if a.get("name")])
+                            match_name = f"{res_artists} - {res_title}" if res_artists else res_title
+                            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' ➔ '{match_name}' ({yt_id}) (result {matched_idx + 1})")
                             t["ytMusicId"] = yt_id
                             if spotify_id:
                                 cache_by_id[spotify_id] = yt_id
