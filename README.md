@@ -32,22 +32,27 @@ uv pip install -r requirements.txt --python .venv
 ```
 
 ### 2. Configure Authentication
-To write and update playlists in your YouTube Music library, you must authenticate. Run the setup script:
-```bash
-.venv/bin/python auth.py
-```
+To write and update playlists in your YouTube Music library, you must authenticate using the official Google YouTube Data API v3.
 
-* **Option 1: Browser Cookie Headers (Highly Recommended)**
-  Follow the on-screen instructions to copy your request headers from `music.youtube.com` via Developer Tools and paste them. This generates `browser.json`.
-  
-* **Option 2: OAuth 2.0 (Unstable/Broken)**
-  *Please note:* Due to Google API changes, using OAuth is currently prone to `400 Bad Request` ("invalid argument") errors on authenticated endpoints (such as playlist management). Use Option 1 instead.
+1. **Google Cloud Console Setup:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/) and create/select a project.
+   - Enable **YouTube Data API v3** in APIs & Services > Library.
+   - Configure the **OAuth Consent Screen** (User type "External", publish the app "In production" so credentials don't expire in 7 days).
+   - Go to **Credentials**, create an **OAuth client ID** of type **Desktop app**, and download the client secrets JSON.
+   - Save the downloaded file as `client_secrets.json` in the root of this directory.
+
+2. **Generate Token:**
+   Run the setup script:
+   ```bash
+   .venv/bin/python auth_google.py
+   ```
+   Follow the on-screen instructions to log into your Google Account in the browser and grant the requested permissions. This generates `token.json`.
 
 ---
 
 ## 🚀 Running the Sync
 
-Once authentication is configured (having `browser.json` in this directory), run the sync script:
+Once authentication is configured (having `token.json` in this directory), run the sync script:
 
 ### Sync Spotify Global Chart
 ```bash
@@ -79,7 +84,7 @@ Alternatively, double-click `sync.sh` in your graphical file manager and select 
 | :--- | :--- | :--- |
 | `--country` | Country code of the chart to sync (`global` or `in`). | `global` |
 | `--data-dir` | Path to save/load scraped JSON cache metadata. | `data` |
-| `--auth` | Specific path to the auth file. | *Auto-detects `browser.json`* |
+| `--auth` | Specific path to the Google OAuth token file. | *Auto-detects `token.json`* |
 | `--dry-run` | Run the sync logic and output actions without writing to YouTube Music. | *Disabled* |
 | `--force` | Force sync even if the weekDate has not changed. | *Disabled* |
 
@@ -90,9 +95,9 @@ Alternatively, double-click `sync.sh` in your graphical file manager and select 
 The repository includes a GitHub Actions workflow `.github/workflows/sync.yml` to automatically run the sync daily at **`03:50 UTC`**.
 
 ### Configuration Steps:
-1. Copy the contents of your locally generated `browser.json`.
+1. Copy the contents of your locally generated `token.json`.
 2. Go to your GitHub repository -> **Settings** -> **Secrets and variables** -> **Actions** -> **New repository secret**.
-3. Create a secret named **`YT_MUSIC_BROWSER_JSON`** and paste the JSON contents.
+3. Create a secret named **`YT_OAUTH_TOKEN_JSON`** and paste the JSON contents.
 4. Push the code to your GitHub repository:
    ```bash
    git init

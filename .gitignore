@@ -1,6 +1,8 @@
 # Credentials
 oauth.json
 browser.json
+token.json
+client_secrets.json
 
 # Python
 .venv/

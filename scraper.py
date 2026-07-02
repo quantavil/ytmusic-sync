@@ -1,4 +1,3 @@
-import sys
 import re
 from datetime import datetime, timezone
 import requests
@@ -144,20 +143,23 @@ def parse_kworb_html(html_content, country_code):
         
         # Note: Featured/collaborator artists (e.g. "(w/ Ejae...)") are intentionally omitted
         # from the scraped artist field as YTM search handles primary artist + title best.
-        href = ""
-        if len(a_tags) >= 2:
-            artist = a_tags[0].get_text(strip=True)
-            title = a_tags[1].get_text(strip=True)
-            href = a_tags[1].get("href", "")
-        elif len(a_tags) == 1:
-            title = a_tags[0].get_text(strip=True)
-            href = a_tags[0].get("href", "")
-            track_text = track_cell.get_text(" ", strip=True)
-            if " - " in track_text:
-                artist = track_text.split(" - ", 1)[0].strip()
+        track_text = track_cell.get_text(" ", strip=True)
+        if " - " in track_text:
+            artist, title = track_text.split(" - ", 1)
+            artist = artist.strip()
+            title = title.strip()
         else:
-            track_text = track_cell.get_text(" ", strip=True)
-            artist, title = track_text.split(" - ", 1) if " - " in track_text else ("", track_text)
+            artist = ""
+            title = track_text.strip()
+
+        # Find the Spotify track link specifically by scanning href for "track/"
+        href = ""
+        for a in a_tags:
+            a_href = a.get("href", "")
+            if "track/" in a_href:
+                href = a_href
+                title = a.get_text(strip=True)
+                break
 
         if href:
             match = re.search(r"track/([a-zA-Z0-9]+)\.html", href)

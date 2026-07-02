@@ -8,7 +8,7 @@ echo "===================================================="
 echo
 
 echo "🚀 Running Sync for GLOBAL chart..."
-uv run python3 sync.py --country global
+uv run python3 sync.py --country global "$@"
 GLOBAL_STATUS=$?
 
 echo
@@ -16,7 +16,7 @@ echo "----------------------------------------------------"
 echo
 
 echo "🚀 Running Sync for INDIA chart..."
-uv run python3 sync.py --country in
+uv run python3 sync.py --country in "$@"
 INDIA_STATUS=$?
 
 echo

@@ -29,9 +29,9 @@ jobs:
         run: |
           uv pip install -r requirements.txt --system
 
-      - name: Restore Browser Credentials
+      - name: Restore Google OAuth Token
         run: |
-          echo '${{ secrets.YT_MUSIC_BROWSER_JSON }}' > browser.json
+          echo '${{ secrets.YT_OAUTH_TOKEN_JSON }}' > token.json
 
       - name: Run Sync (Global)
         run: |

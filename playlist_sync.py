@@ -1,10 +1,12 @@
-import sys
 import time
 import random
 import json
 from pathlib import Path
 
 from utils import retry_operation, title_matches, artist_matches, clean_string
+from youtube_client import call
+
+RANK_SHIFT_THRESHOLD = 5
 
 def load_ytmusic_cache(data_dir):
     cache_by_id = {}
@@ -48,20 +50,37 @@ def should_skip_sync(out_file, week_date, force, dry_run):
             print(f"⚠️ Warning: Failed to read cached chart file to compare weekDate: {e}")
     return False
 
-def find_or_create_playlist(yt, target_title, target_description):
+def find_or_create_playlist(youtube, target_title, target_description):
     print(f"Searching for existing playlist: '{target_title}'...")
-    playlists = retry_operation(
-        lambda: yt.get_library_playlists(limit=None),
-        attempts=3,
-        delay=2,
-        fatal=True,
-        error_msg="Get library playlists"
-    )
     playlist_id = None
-    for pl in playlists:
-        if pl["title"].strip().lower() == target_title.strip().lower():
-            playlist_id = pl["playlistId"]
-            print(f"Found existing playlist: {pl['title']} (ID: {playlist_id})")
+    existing_description = None
+    next_page_token = None
+    
+    while True:
+        def list_playlists():
+            return youtube.playlists().list(
+                mine=True,
+                part="snippet,id",
+                maxResults=50,
+                pageToken=next_page_token
+            ).execute()
+            
+        res = call(list_playlists, error_msg="List mine playlists")
+        items = res.get("items", [])
+        
+        for pl in items:
+            title = pl["snippet"]["title"]
+            if title.strip().lower() == target_title.strip().lower():
+                playlist_id = pl["id"]
+                existing_description = pl["snippet"].get("description", "")
+                print(f"Found existing playlist: {title} (ID: {playlist_id})")
+                break
+                
+        if playlist_id:
+            break
+            
+        next_page_token = res.get("nextPageToken")
+        if not next_page_token:
             break
             
     is_new_playlist = False
@@ -69,51 +88,95 @@ def find_or_create_playlist(yt, target_title, target_description):
         print(f"Playlist not found. Creating new public playlist: '{target_title}'...")
         
         def create_pl():
-            res = yt.create_playlist(
-                title=target_title,
-                description=target_description,
-                privacy_status="PUBLIC"
-            )
-            if res == "STATUS_FAILED":
-                raise RuntimeError(f"STATUS_FAILED: {res}")
-            return res
+            return youtube.playlists().insert(
+                part="snippet,status",
+                body={
+                    "snippet": {
+                        "title": target_title,
+                        "description": target_description
+                    },
+                    "status": {
+                        "privacyStatus": "public"
+                    }
+                }
+            ).execute()
             
-        res = retry_operation(
-            create_pl,
-            attempts=3,
-            delay=2,
-            fatal=True,
-            error_msg="Create playlist"
-        )
-        if isinstance(res, str):
-            playlist_id = res
-        elif isinstance(res, dict) and "playlistId" in res:
-            playlist_id = res["playlistId"]
-        else:
-            raise RuntimeError(f"Failed to create playlist. Response: {res}")
+        res = call(create_pl, error_msg="Create playlist")
+        playlist_id = res["id"]
         print(f"Created playlist ID: {playlist_id}")
         is_new_playlist = True
+        existing_description = target_description
         
     if is_new_playlist:
         current_tracks = []
     else:
         print("Fetching current playlist tracks...")
-        playlist_details = retry_operation(
-            lambda: yt.get_playlist(playlist_id, limit=None),
-            attempts=3,
-            delay=2,
-            fatal=True,
-            error_msg="Get playlist details"
-        )
-        current_tracks = playlist_details.get("tracks", [])
+        current_tracks = []
+        next_page_token = None
+        
+        while True:
+            def list_items():
+                return youtube.playlistItems().list(
+                    playlistId=playlist_id,
+                    part="snippet,id",
+                    maxResults=50,
+                    pageToken=next_page_token
+                ).execute()
+                
+            res = call(list_items, error_msg="List playlist items")
+            for item in res.get("items", []):
+                snippet = item.get("snippet", {})
+                video_id = snippet.get("resourceId", {}).get("videoId")
+                playlist_item_id = item.get("id")
+                current_tracks.append({
+                    "videoId": video_id,
+                    "setVideoId": playlist_item_id
+                })
+            next_page_token = res.get("nextPageToken")
+            if not next_page_token:
+                break
+                
         print(f"Current playlist has {len(current_tracks)} tracks.")
         
-    return playlist_id, current_tracks
+    return playlist_id, current_tracks, existing_description
+
+def _search_and_match(yt, query, title, artist, filter_type):
+    """
+    Runs a single YTM search (with retry on transient failure) and returns
+    (matched_result_or_None, matched_index_or_-1).
+    Retries are non-fatal: a track that still fails after retries returns
+    (None, -1) rather than crashing the whole run.
+    """
+    def do_search():
+        time.sleep(random.uniform(0.3, 0.8))  # rate-limit courtesy delay
+        return yt.search(query, filter=filter_type)
+
+    results = retry_operation(
+        do_search,
+        attempts=3,
+        delay=2,
+        fatal=False,
+        error_msg=f"YTMusic '{filter_type}' search for '{query}'"
+    )
+    if not results:
+        return None, -1
+
+    candidate_result, candidate_idx = None, -1
+    for r_idx, res in enumerate(results[:3]):
+        if title_matches(title, res):
+            if artist_matches(artist, res):
+                return res, r_idx
+            elif candidate_result is None:
+                candidate_result, candidate_idx = res, r_idx
+
+    return candidate_result, candidate_idx
+
 
 def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
     resolved_count = 0
     cached_count = 0
-    
+    failed_count = 0
+
     print("Enriching track metadata with YouTube Music IDs...")
     # WARNING: This loop MUST execute sequentially. Each successful resolution updates
     # cache_by_name, which is referenced by subsequent items. Parallelizing or reordering
@@ -121,165 +184,204 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
     for idx, t in enumerate(tracks):
         if (idx + 1) % 50 == 0 or idx == 0 or idx == len(tracks) - 1:
             print(f"  Progress: {idx + 1}/{len(tracks)} tracks processed...")
-            
+
         spotify_id = t.get("spotifyId")
         artist = t.get("artist")
         title = t.get("title")
-        
+
         # Check Spotify ID cache
         yt_id = cache_by_id.get(spotify_id) if spotify_id else None
-        
+
         # Check Name cache
         if not yt_id and artist and title:
             key = f"{clean_string(artist)}|||{clean_string(title)}"
             yt_id = cache_by_name.get(key)
-            
+
         if yt_id:
             t["ytMusicId"] = yt_id
+            if spotify_id and spotify_id not in cache_by_id:
+                cache_by_id[spotify_id] = yt_id
             cached_count += 1
+            continue
+
+        if not (artist and title):
+            print(f"  ⚠️ Warning: Skipping track due to missing metadata — Artist: '{artist}', Title: '{title}'")
+            failed_count += 1
+            continue
+
+        query = f"{artist} {title}"
+        search_type = "songs"
+        matched_result, matched_idx = _search_and_match(yt, query, title, artist, "songs")
+
+        # Fall back to videos if songs search found nothing OR the songs match
+        # had no usable videoId (edge case: matched metadata but no playable id).
+        if not matched_result or not matched_result.get("videoId"):
+            if not matched_result:
+                print(f"    ⏭️ Songs search miss for '{query}', trying videos...")
+            else:
+                print(f"  ⚠ Songs match for '{query}' had no videoId, trying videos...")
+            matched_result, matched_idx = _search_and_match(yt, query, title, artist, "videos")
+            search_type = "videos"
+
+        if matched_result and matched_result.get("videoId"):
+            yt_id = matched_result["videoId"]
+            res_title = matched_result.get("title", "")
+            res_artists = ", ".join([a.get("name", "") for a in matched_result.get("artists", []) if a.get("name")])
+            match_name = f"{res_artists} - {res_title}" if res_artists else res_title
+            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' ➔ '{match_name}' ({yt_id}) (result {matched_idx + 1})")
+            t["ytMusicId"] = yt_id
+            if spotify_id:
+                cache_by_id[spotify_id] = yt_id
+            key = f"{clean_string(artist)}|||{clean_string(title)}"
+            cache_by_name[key] = yt_id
+            resolved_count += 1
         else:
-            if artist and title:
-                query = f"{artist} {title}"
-                try:
-                    # Delay to prevent rate limiting
-                    time.sleep(random.uniform(0.3, 0.8))
-                    
-                    search_results = yt.search(query, filter="songs")
-                    matched_result = None
-                    matched_idx = -1
-                    search_type = "songs"
-                    
-                    if search_results:
-                        candidate_result = None
-                        candidate_idx = -1
-                        for r_idx, res in enumerate(search_results[:3]):
-                            if title_matches(title, res):
-                                if artist_matches(artist, res):
-                                    matched_result = res
-                                    matched_idx = r_idx
-                                    break
-                                elif candidate_result is None:
-                                    candidate_result = res
-                                    candidate_idx = r_idx
-                        
-                        if not matched_result and candidate_result:
-                            matched_result = candidate_result
-                            matched_idx = candidate_idx
-                    
-                    # Fallback: search videos
-                    if not matched_result:
-                        print(f"    ⏭️ Songs search miss for '{query}', trying videos...")
-                        time.sleep(random.uniform(0.3, 0.8))
-                        video_results = yt.search(query, filter="videos")
-                        if video_results:
-                            candidate_result = None
-                            candidate_idx = -1
-                            for r_idx, res in enumerate(video_results[:3]):
-                                if title_matches(title, res):
-                                    if artist_matches(artist, res):
-                                        matched_result = res
-                                        matched_idx = r_idx
-                                        search_type = "videos"
-                                        break
-                                    elif candidate_result is None:
-                                        candidate_result = res
-                                        candidate_idx = r_idx
-                                        
-                            if not matched_result and candidate_result:
-                                matched_result = candidate_result
-                                matched_idx = candidate_idx
-                                search_type = "videos"
-                    
-                    if matched_result:
-                        yt_id = matched_result.get("videoId")
-                        if yt_id:
-                            res_title = matched_result.get("title", "")
-                            res_artists = ", ".join([a.get("name", "") for a in matched_result.get("artists", []) if a.get("name")])
-                            match_name = f"{res_artists} - {res_title}" if res_artists else res_title
-                            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' ➔ '{match_name}' ({yt_id}) (result {matched_idx + 1})")
-                            t["ytMusicId"] = yt_id
-                            if spotify_id:
-                                cache_by_id[spotify_id] = yt_id
-                            key = f"{clean_string(artist)}|||{clean_string(title)}"
-                            cache_by_name[key] = yt_id
-                            resolved_count += 1
-                        else:
-                            print(f"  ⚠ No videoId in match for: {query}")
-                            matched_result = None
-                    else:
-                        print(f"  ⚠️ Unresolved: '{query}' — no title match in top 3 songs or videos.")
-                except Exception as e:
-                    print(f"  ⚠ YTMusic search failed for '{query}': {e}")
-            else:
-                print(f"  ⚠️ Warning: Skipping track due to missing metadata — Artist: '{artist}', Title: '{title}'")
-                    
-    print(f"YTMusic Enrichment: {resolved_count} resolved via search, {cached_count} resolved via cache.")
-    return tracks
+            print(f"  ⚠️ Unresolved: '{query}' — no title match / no videoId in top 3 songs or videos (after retries).")
+            failed_count += 1
 
-def sync_playlist(yt, playlist_id, current_tracks, new_video_ids, target_description):
-    # A. Add new tracks first (appends to the end of the playlist)
-    print(f"Adding {len(new_video_ids)} new tracks...")
-    chunk_size = 50
-    for i in range(0, len(new_video_ids), chunk_size):
-        chunk = new_video_ids[i:i + chunk_size]
-        print(f"Adding tracks {i+1} to {min(i + chunk_size, len(new_video_ids))}...")
+    print(f"YTMusic Enrichment: {resolved_count} resolved via search, {cached_count} resolved via cache, {failed_count} failed.")
+    return tracks, resolved_count, cached_count, failed_count
+
+def _log_orphaned_tracks(data_dir, playlist_id, orphaned):
+    """Append unremovable playlist entries to a durable log so they don't just
+    scroll off in CI output. These are entries YTM returned without a
+    setVideoId/videoId pair (usually unavailable/region-blocked videos)."""
+    if not orphaned:
+        return
+    log_path = Path(data_dir) / "orphaned_tracks.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime, timezone
+    with open(log_path, "a", encoding="utf-8") as f:
+        ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        for t in orphaned:
+            f.write(f"{ts}\tplaylist={playlist_id}\ttrack={json.dumps(t)}\n")
+    print(f"⚠️ Logged {len(orphaned)} orphaned/unremovable track entries to {log_path}")
+
+
+def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_description=None, data_dir="data"):
+    # 1. Identify orphaned tracks
+    orphaned = [t for t in current_tracks if not t.get("videoId") or not t.get("setVideoId")]
+    if orphaned:
+        print(f"⚠️ Warning: {len(orphaned)} tracks lack videoId or setVideoId and cannot be managed.")
+        _log_orphaned_tracks(data_dir, playlist_id, orphaned)
         
-        def upload_chunk():
-            res = yt.add_playlist_items(playlist_id, chunk, duplicates=True)
-            status = res.get('status') if isinstance(res, dict) else res
-            if status == 'STATUS_FAILED':
-                raise RuntimeError(f"STATUS_FAILED: {res}")
-            return res
-
-        retry_operation(
-            upload_chunk,
-            attempts=3,
-            delay=2,
-            fatal=True,
-            error_msg=f"Add chunk {i+1} to {min(i + chunk_size, len(new_video_ids))} to playlist"
-        )
-    print("New tracks added successfully.")
-
-    # B. Remove old tracks (removes original track instances by original setVideoId)
-    current_count = len(current_tracks)
-    if current_count > 0:
-        to_remove = []
-        skipped_remove_count = 0
-        for t in current_tracks:
-            vid = t.get("videoId")
-            svid = t.get("setVideoId")
-            if vid and svid:
-                to_remove.append({"videoId": vid, "setVideoId": svid})
-            else:
-                skipped_remove_count += 1
-        
-        if skipped_remove_count > 0:
-            print(f"⚠️ Warning: {skipped_remove_count} tracks in original playlist could not be marked for removal because they lack videoId or setVideoId. These tracks may be unavailable videos and could accumulate. If duplicates persist, consider recreating the playlist.")
+    # 2. Identify deletions and duplicates
+    seen_vids = set()
+    to_delete = []
+    remaining_current = []
+    
+    for item in current_tracks:
+        vid = item.get("videoId")
+        item_id = item.get("setVideoId")
+        if not vid or not item_id:
+            continue
+        if vid not in new_video_ids or vid in seen_vids:
+            to_delete.append(item_id)
+        else:
+            seen_vids.add(vid)
+            remaining_current.append(item)
             
-        if to_remove:
-            print(f"Removing {len(to_remove)} old tracks from YouTube Music playlist...")
-            chunk_size = 50
-            for i in range(0, len(to_remove), chunk_size):
-                chunk = to_remove[i:i + chunk_size]
-                print(f"Removing tracks {i+1} to {min(i + chunk_size, len(to_remove))}...")
-                retry_operation(
-                    lambda: yt.remove_playlist_items(playlist_id, chunk),
-                    attempts=3,
-                    delay=2,
-                    fatal=True,
-                    error_msg=f"Remove chunk {i+1} to {min(i + chunk_size, len(to_remove))} from playlist"
-                )
-            print("Removal of old tracks complete.")
+    # A. Execute deletions
+    if to_delete:
+        print(f"Removing {len(to_delete)} old/duplicate tracks from YouTube Music playlist...")
+        for idx, item_id in enumerate(to_delete):
+            print(f"Removing track {idx+1}/{len(to_delete)} (ID: {item_id})...")
+            def delete_item():
+                return youtube.playlistItems().delete(id=item_id).execute()
+            call(delete_item, error_msg=f"Delete playlist item {item_id}")
+            time.sleep(0.2)
+        print("Removal of old tracks complete.")
+    else:
+        print("No tracks need to be removed.")
+        
+    # B. Insert new tracks and reorder shifted tracks
+    # We maintain current_state in memory to track current playlist positions.
+    current_state = list(remaining_current)
+    
+    print(f"Synchronizing playlist content and order (Target tracks: {len(new_video_ids)})...")
+    for target_idx, vid in enumerate(new_video_ids):
+        # Find where this video is in our current_state in memory
+        curr_idx = -1
+        for idx, item in enumerate(current_state):
+            if item["videoId"] == vid:
+                curr_idx = idx
+                break
+                
+        if curr_idx == -1:
+            # Case 1: Video is not in the playlist -> Insert at the target index
+            print(f"Inserting new track {vid} at position {target_idx}...")
+            
+            def insert_item():
+                return youtube.playlistItems().insert(
+                    part="snippet",
+                    body={
+                        "snippet": {
+                            "playlistId": playlist_id,
+                            "resourceId": {
+                                "kind": "youtube#video",
+                                "videoId": vid
+                            },
+                            "position": target_idx
+                        }
+                    }
+                ).execute()
+                
+            res = call(insert_item, error_msg=f"Insert video {vid} at position {target_idx}")
+            new_item_id = res["id"]
+            current_state.insert(target_idx, {"videoId": vid, "setVideoId": new_item_id})
+            time.sleep(0.2)
+            
         else:
-            print("No tracks with valid setVideoId and videoId found. Skipping removal.")
-
+            # Case 2: Video is in the playlist -> Check if we need to update its position
+            shift = abs(curr_idx - target_idx)
+            if shift > RANK_SHIFT_THRESHOLD:
+                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {target_idx}, shift: {shift} > threshold {RANK_SHIFT_THRESHOLD})...")
+                item_id = current_state[curr_idx]["setVideoId"]
+                
+                def update_item():
+                    return youtube.playlistItems().update(
+                        part="snippet",
+                        body={
+                            "id": item_id,
+                            "snippet": {
+                                "playlistId": playlist_id,
+                                "resourceId": {
+                                    "kind": "youtube#video",
+                                    "videoId": vid
+                                },
+                                "position": target_idx
+                            }
+                        }
+                    ).execute()
+                    
+                call(update_item, error_msg=f"Move item {item_id} to position {target_idx}")
+                # Update in-memory state: move the item
+                item = current_state.pop(curr_idx)
+                current_state.insert(target_idx, item)
+                time.sleep(0.2)
+            else:
+                # Do nothing, leave it at curr_idx (it's close enough!)
+                pass
+                
+    print("Playlist content and order synchronization complete.")
+    
     # C. Update description to match the new Week Date
+    if existing_description == target_description:
+        print("Playlist description is already up to date. Skipping description update to save quota.")
+        return
+        
     print("Updating playlist description...")
-    retry_operation(
-        lambda: yt.edit_playlist(playlist_id, description=target_description),
-        attempts=3,
-        delay=2,
-        fatal=False,
-        error_msg="Update playlist description"
-    )
-    print("Description update completed (or skipped on failure).")
+    def edit_pl():
+        return youtube.playlists().update(
+            part="snippet",
+            body={
+                "id": playlist_id,
+                "snippet": {
+                    "title": target_title,
+                    "description": target_description
+                }
+            }
+        ).execute()
+        
+    call(edit_pl, attempts=3, delay=2, error_msg="Update playlist description")
+    print("Description update completed.")

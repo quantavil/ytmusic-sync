@@ -9,7 +9,6 @@ ytmusic-sync/
 │   └── workflows/
 │       └── sync.yml   # GitHub Actions workflow for scheduled daily sync using uv
 ├── data/              # Cached country charts and resolved ytMusicId entries
-├── auth.py            # Interactive script to set up browser authentication credentials
 ├── utils.py           # Common constants and shared generic utilities
 ├── scraper.py         # Parsing and HTML scraping logic for Kworb weekly charts
 ├── playlist_sync.py   # YouTube Music library operations and cache checks
@@ -17,7 +16,6 @@ ytmusic-sync/
 ├── sync.sh            # One-click helper shell script to sync all charts locally
 ├── test_sync.py       # Offline unit tests for utility and parsing logic
 ├── requirements.txt   # Project dependencies (ytmusicapi, requests, beautifulsoup4)
-├── browser.json       # Generated browser credentials (must be kept out of version control)
 └── README.md          # User setup and execution documentation
 
 
@@ -30,8 +28,8 @@ ytmusic-sync/
 - `requests` and `beautifulsoup4` for web scraping.
 
 ## Critical Information
-- Do not commit `browser.json` or the `data/` cache folder to version control (configured in `.gitignore`).
-- YouTube's OAuth implementation for `ytmusicapi` is currently experiencing a backend issue (Issue #813) returning `400 Bad Request` on authenticated endpoints. Browser headers (`browser.json`) is the recommended working authentication method.
+- Do not commit `browser.json`, `token.json`, or the `data/` cache folder to version control (configured in `.gitignore`).
+- YouTube's OAuth implementation for `ytmusicapi` is currently experiencing a backend issue (Issue #813) returning `400 Bad Request` on authenticated endpoints. Browser headers (`browser.json`) is no longer used; instead, `ytmusicapi` is used unauthenticated for search queries (quota-free), and all playlist mutations are routed through the official Google YouTube Data API v3 client (`token.json`).
 
 ## Insights
 - Cache loaded from existing JSONs in `data/` prevents duplicate YouTube Music searches and speeds up subsequent runs.
@@ -50,3 +48,4 @@ ytmusic-sync/
 - [2026-07-02] `remove_playlist_items()` was sent all items at once, exceeding the YTM API limit of 50. → Fixed by chunking playlist removals in batches of 50.
 - [2026-07-02] Tracks with a single anchor tag on Kworb had empty artists. → Fixed by parsing raw text inside the td and splitting by `" - "` to extract the artist.
 - [2026-07-02] `auth.py` was calling `YTMusic.setup()` which is no longer a method on the `YTMusic` class in newer `ytmusicapi` versions. → Fixed by importing and calling the module-level `setup` function.
+- [2026-07-02] Mocking nested client builders using MagicMock in a loop with pageToken checks causes infinite loops in tests because default MagicMock attribute/method return values are truthy. → Fixed by explicitly setting list item and page token mocks to return None or empty results.

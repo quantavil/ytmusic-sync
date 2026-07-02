@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 from pathlib import Path
 import tempfile
 import json
-import sys
 
 from utils import clean_string, clean_title, title_matches, artist_matches, retry_operation
 from playlist_sync import (
@@ -25,6 +24,9 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(clean_string("eńau"), "enau")
         self.assertEqual(clean_string("JAŸ-Z"), "jayz")
         self.assertEqual(clean_string("Titã Me Preguntó"), "tita me pregunto")
+        # Unicode script preservation (e.g. Hindi/Devanagari)
+        self.assertEqual(clean_string("सजनी"), "सजनी")
+        self.assertEqual(clean_string("Dil Bechara (दिल बेचारा)"), "dil bechara दिल बेचारा")
 
     def test_clean_title(self):
         # Strip feat in parentheses
@@ -352,52 +354,89 @@ class TestSyncBot(unittest.TestCase):
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(len(parsed["tracks"]), 1)
 
-    @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
-    def test_find_or_create_playlist_existing(self, mock_retry):
-        yt = MagicMock()
-        yt.get_library_playlists.return_value = [
-            {"title": "Spotify Weekly Global Top 200", "playlistId": "pl_123"}
-        ]
-        yt.get_playlist.return_value = {
-            "tracks": [{"videoId": "vid1", "setVideoId": "svid1"}]
-        }
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    def test_find_or_create_playlist_existing(self, mock_call):
+        youtube = MagicMock()
         
-        playlist_id, current_tracks = find_or_create_playlist(yt, "Spotify Weekly Global Top 200", "desc")
+        list_playlists_mock = MagicMock()
+        list_playlists_mock.execute.return_value = {
+            "items": [
+                {
+                    "id": "pl_123",
+                    "snippet": {"title": "Spotify Weekly Global Top 200", "description": "desc"}
+                }
+            ],
+            "nextPageToken": None
+        }
+        youtube.playlists().list.return_value = list_playlists_mock
+        
+        list_items_mock = MagicMock()
+        list_items_mock.execute.return_value = {
+            "items": [
+                {
+                    "id": "svid1",
+                    "snippet": {
+                        "resourceId": {"videoId": "vid1"}
+                    }
+                }
+            ],
+            "nextPageToken": None
+        }
+        youtube.playlistItems().list.return_value = list_items_mock
+        
+        playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
         
         self.assertEqual(playlist_id, "pl_123")
         self.assertEqual(len(current_tracks), 1)
         self.assertEqual(current_tracks[0]["videoId"], "vid1")
-        yt.get_library_playlists.assert_called_once()
-        yt.get_playlist.assert_called_once_with("pl_123", limit=None)
-        yt.create_playlist.assert_not_called()
+        self.assertEqual(current_tracks[0]["setVideoId"], "svid1")
+        self.assertEqual(existing_description, "desc")
+        youtube.playlists().list.assert_called_once_with(
+            mine=True, part="snippet,id", maxResults=50, pageToken=None
+        )
+        youtube.playlistItems().list.assert_called_once_with(
+            playlistId="pl_123", part="snippet,id", maxResults=50, pageToken=None
+        )
+        youtube.playlists().insert.assert_not_called()
 
-    @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
-    def test_find_or_create_playlist_new(self, mock_retry):
-        yt = MagicMock()
-        yt.get_library_playlists.return_value = []
-        yt.create_playlist.return_value = "new_pl_456"
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    def test_find_or_create_playlist_new(self, mock_call):
+        youtube = MagicMock()
         
-        playlist_id, current_tracks = find_or_create_playlist(yt, "Spotify Weekly Global Top 200", "desc")
+        list_playlists_mock = MagicMock()
+        list_playlists_mock.execute.return_value = {"items": [], "nextPageToken": None}
+        youtube.playlists().list.return_value = list_playlists_mock
+        
+        insert_playlist_mock = MagicMock()
+        insert_playlist_mock.execute.return_value = {"id": "new_pl_456"}
+        youtube.playlists().insert.return_value = insert_playlist_mock
+        
+        playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
         
         self.assertEqual(playlist_id, "new_pl_456")
         self.assertEqual(current_tracks, [])
-        yt.get_library_playlists.assert_called_once()
-        yt.create_playlist.assert_called_once_with(
-            title="Spotify Weekly Global Top 200",
-            description="desc",
-            privacy_status="PUBLIC"
+        self.assertEqual(existing_description, "desc")
+        youtube.playlists().list.assert_called_once()
+        youtube.playlists().insert.assert_called_once_with(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": "Spotify Weekly Global Top 200",
+                    "description": "desc"
+                },
+                "status": {
+                    "privacyStatus": "public"
+                }
+            }
         )
-        yt.get_playlist.assert_not_called()
 
-    def test_find_or_create_playlist_create_status_failed(self):
-        yt = MagicMock()
-        yt.get_library_playlists.return_value = []
-        yt.create_playlist.return_value = "STATUS_FAILED"
+    @patch("playlist_sync.call")
+    def test_find_or_create_playlist_api_error(self, mock_call):
+        youtube = MagicMock()
+        mock_call.side_effect = RuntimeError("API error")
         
-        # Because create_pl raises RuntimeError when status is STATUS_FAILED, 
-        # retry_operation will exhaust retries and call sys.exit(1) because fatal=True.
-        with self.assertRaises(SystemExit):
-            find_or_create_playlist(yt, "Spotify Weekly Global Top 200", "desc")
+        with self.assertRaises(RuntimeError):
+            find_or_create_playlist(youtube, "Spotify Weekly Global Top 200", "desc")
 
     def test_resolve_track_ids(self):
         yt = MagicMock()
@@ -413,10 +452,13 @@ class TestSyncBot(unittest.TestCase):
         cache_by_id = {"sp2": "yt_levitate"}
         cache_by_name = {}
         
-        resolved = resolve_track_ids(yt, tracks, cache_by_id, cache_by_name)
+        resolved, resolved_count, cached_count, failed_count = resolve_track_ids(yt, tracks, cache_by_id, cache_by_name)
         
         self.assertEqual(resolved[0]["ytMusicId"], "yt_light")
         self.assertEqual(resolved[1]["ytMusicId"], "yt_levitate")
+        self.assertEqual(resolved_count, 1)
+        self.assertEqual(cached_count, 1)
+        self.assertEqual(failed_count, 0)
         # Songs search matched, so only songs filter was called
         yt.search.assert_called_once_with("The Weeknd Blinding Lights", filter="songs")
 
@@ -433,52 +475,235 @@ class TestSyncBot(unittest.TestCase):
         
         tracks = [{"spotifyId": "sp1", "artist": "Drake", "title": "One Dance"}]
         
-        resolved = resolve_track_ids(yt, tracks, {}, {})
+        resolved, resolved_count, cached_count, failed_count = resolve_track_ids(yt, tracks, {}, {})
         
         self.assertEqual(resolved[0]["ytMusicId"], "yt_dance")
+        self.assertEqual(resolved_count, 1)
         self.assertEqual(yt.search.call_count, 2)
         yt.search.assert_any_call("Drake One Dance", filter="songs")
         yt.search.assert_any_call("Drake One Dance", filter="videos")
 
-    @patch("playlist_sync.retry_operation", side_effect=lambda func, *args, **kwargs: func())
-    def test_sync_playlist_success(self, mock_retry):
+    def test_resolve_track_ids_missing_video_id_falls_back(self):
+        # Songs search matches title+artist but the result has no videoId
+        # (edge case bug fix: must still fall back to videos, not give up).
         yt = MagicMock()
-        yt.add_playlist_items.return_value = {"status": "STATUS_SUCCEEDED"}
-        
-        current_tracks = [
-            {"videoId": "old1", "setVideoId": "svid1"},
-            {"videoId": "old2", "setVideoId": "svid2"}
-        ]
-        new_tracks = [f"new_{i}" for i in range(55)]
-        
-        sync_playlist(yt, "pl_123", current_tracks, new_tracks, "new description")
-        
-        # Verify add_playlist_items is called twice (chunk size 50)
-        self.assertEqual(yt.add_playlist_items.call_count, 2)
-        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[:50], duplicates=True)
-        yt.add_playlist_items.assert_any_call("pl_123", new_tracks[50:], duplicates=True)
-        
-        # Verify remove_playlist_items is called with current tracks
-        yt.remove_playlist_items.assert_called_once_with(
-            "pl_123",
-            [
-                {"videoId": "old1", "setVideoId": "svid1"},
-                {"videoId": "old2", "setVideoId": "svid2"}
-            ]
-        )
-        
-        # Verify edit_playlist is called
-        yt.edit_playlist.assert_called_once_with("pl_123", description="new description")
+        def mock_search(query, filter=None):
+            if filter == "songs":
+                return [{"title": "One Dance", "artists": [{"name": "Drake"}], "videoId": None}]
+            elif filter == "videos":
+                return [{"title": "One Dance", "artists": [{"name": "Drake"}], "videoId": "yt_dance"}]
+            return []
+        yt.search.side_effect = mock_search
+
+        tracks = [{"spotifyId": "sp1", "artist": "Drake", "title": "One Dance"}]
+        resolved, resolved_count, cached_count, failed_count = resolve_track_ids(yt, tracks, {}, {})
+
+        self.assertEqual(resolved[0]["ytMusicId"], "yt_dance")
+        self.assertEqual(resolved_count, 1)
+        self.assertEqual(yt.search.call_count, 2)
 
     @patch("utils.time.sleep", return_value=None)
-    def test_sync_playlist_add_failed(self, mock_sleep):
+    def test_resolve_track_ids_retries_transient_search_failure(self, mock_sleep):
+        # First call raises, second call (retry) succeeds.
         yt = MagicMock()
-        yt.add_playlist_items.return_value = {"status": "STATUS_FAILED"}
+        call_count = {"n": 0}
+        def mock_search(query, filter=None):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise ConnectionError("transient network blip")
+            return [{"title": "Blinding Lights", "artists": [{"name": "The Weeknd"}], "videoId": "yt_light"}]
+        yt.search.side_effect = mock_search
+
+        tracks = [{"spotifyId": "sp1", "artist": "The Weeknd", "title": "Blinding Lights"}]
+        resolved, resolved_count, cached_count, failed_count = resolve_track_ids(yt, tracks, {}, {})
+
+        self.assertEqual(resolved[0]["ytMusicId"], "yt_light")
+        self.assertEqual(resolved_count, 1)
+        self.assertEqual(failed_count, 0)
+        self.assertEqual(call_count["n"], 2)  # 1 failure + 1 successful retry
+
+    @patch("utils.time.sleep", return_value=None)
+    def test_resolve_track_ids_permanent_failure_counted(self, mock_sleep):
+        # Both songs and videos search exhaust retries -> failed_count increments,
+        # ytMusicId stays unset, no crash.
+        yt = MagicMock()
+        yt.search.side_effect = ConnectionError("down")
+
+        tracks = [{"spotifyId": "sp1", "artist": "Nobody", "title": "Nothing"}]
+        resolved, resolved_count, cached_count, failed_count = resolve_track_ids(yt, tracks, {}, {})
+
+        self.assertNotIn("ytMusicId", resolved[0]) if "ytMusicId" not in resolved[0] else \
+            self.assertEqual(resolved[0].get("ytMusicId"), None)
+        self.assertEqual(resolved_count, 0)
+        self.assertEqual(failed_count, 1)
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_delta_and_reorder(self, mock_sleep, mock_call):
+        youtube = MagicMock()
         
-        with self.assertRaises(SystemExit):
-            sync_playlist(yt, "pl_123", [], ["new_1"], "desc")
-        self.assertEqual(yt.add_playlist_items.call_count, 3)
-        yt.add_playlist_items.assert_any_call("pl_123", ["new_1"], duplicates=True)
+        current_tracks = [
+            {"videoId": "old2", "setVideoId": "svid2"},  # index 0
+            {"videoId": "old3", "setVideoId": "svid3"},  # index 1
+            {"videoId": "old1", "setVideoId": "svid1"}   # index 2
+        ]
+        
+        target_tracks = ["new1", "old3", "new2", "new3", "new4", "new5", "new6", "old2"]
+        
+        insert_mocks = []
+        for new_vid in ["new1", "new2", "new3", "new4", "new5", "new6"]:
+            m = MagicMock()
+            m.execute.return_value = {"id": f"svid_{new_vid}"}
+            insert_mocks.append(m)
+            
+        youtube.playlistItems().insert.side_effect = lambda part, body: insert_mocks.pop(0)
+        
+        delete_mock = MagicMock()
+        youtube.playlistItems().delete.return_value = delete_mock
+        
+        update_mock = MagicMock()
+        youtube.playlistItems().update.return_value = update_mock
+        youtube.playlists().update.return_value = update_mock
+        
+        sync_playlist(
+            youtube,
+            playlist_id="pl_123",
+            current_tracks=current_tracks,
+            new_video_ids=target_tracks,
+            target_title="Spotify Weekly Global Top 200",
+            target_description="desc"
+        )
+        
+        youtube.playlistItems().delete.assert_called_once_with(id="svid1")
+        self.assertEqual(youtube.playlistItems().insert.call_count, 6)
+        
+        youtube.playlistItems().update.assert_called_once_with(
+            part="snippet",
+            body={
+                "id": "svid2",
+                "snippet": {
+                    "playlistId": "pl_123",
+                    "resourceId": {
+                        "kind": "youtube#video",
+                        "videoId": "old2"
+                    },
+                    "position": 7
+                }
+            }
+        )
+        
+        youtube.playlists().update.assert_called_once_with(
+            part="snippet",
+            body={
+                "id": "pl_123",
+                "snippet": {
+                    "title": "Spotify Weekly Global Top 200",
+                    "description": "desc"
+                }
+            }
+        )
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_pure_reshuffle(self, mock_sleep, mock_call):
+        youtube = MagicMock()
+        
+        current_tracks = [
+            {"videoId": "A", "setVideoId": "svidA"},
+            {"videoId": "B", "setVideoId": "svidB"},
+            {"videoId": "C", "setVideoId": "svidC"},
+            {"videoId": "D", "setVideoId": "svidD"},
+            {"videoId": "E", "setVideoId": "svidE"},
+            {"videoId": "F", "setVideoId": "svidF"},
+            {"videoId": "G", "setVideoId": "svidG"},
+            {"videoId": "H", "setVideoId": "svidH"}
+        ]
+        
+        # Swap A and H. Shift is 7, which is > 5 threshold.
+        target_tracks = ["H", "B", "C", "D", "E", "F", "G", "A"]
+        
+        update_mock = MagicMock()
+        youtube.playlistItems().update.return_value = update_mock
+        youtube.playlists().update.return_value = update_mock
+        
+        sync_playlist(
+            youtube,
+            playlist_id="pl_123",
+            current_tracks=current_tracks,
+            new_video_ids=target_tracks,
+            target_title="Spotify Weekly Global Top 200",
+            target_description="desc"
+        )
+        
+        # Expect exactly 2 updates (one for H and one for A).
+        self.assertEqual(youtube.playlistItems().update.call_count, 2)
+
+    def test_youtube_client_call_quota_error(self):
+        from youtube_client import call as youtube_call, QuotaExceededError
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        resp = httplib2.Response({"status": 403})
+        content = b'{"error": {"errors": [{"reason": "quotaExceeded"}], "message": "Quota exceeded"}}'
+        http_err = HttpError(resp, content)
+        
+        def failing_func():
+            raise http_err
+            
+        with self.assertRaises(QuotaExceededError):
+            youtube_call(failing_func, attempts=1)
+
+    def test_parse_kworb_html_multiple_artists(self):
+        mock_html = """
+        <html>
+        <head><title>Spotify Weekly Chart 2026-07-01</title></head>
+        <body>
+        <span class="pagetitle">Spotify Weekly Chart - 2026-07-01</span>
+        <table>
+            <tr>
+                <th>Pos</th><th>P+</th><th>Artist and Title</th><th>Wks</th><th>Pk</th><th>(x?)</th><th>Streams</th>
+            </tr>
+            <tr>
+                <td>1</td>
+                <td>0</td>
+                <td><a href="artist/a.html">Artist A</a> & <a href="artist/b.html">Artist B</a> - <a href="track/spotifyid1.html">Title A</a></td>
+                <td>10</td><td>1</td><td>x</td><td>1,500,000</td>
+            </tr>
+        </table>
+        </body>
+        </html>
+        """
+        parsed = parse_kworb_html(mock_html, "global")
+        self.assertEqual(len(parsed["tracks"]), 1)
+        track = parsed["tracks"][0]
+        self.assertEqual(track["artist"], "Artist A & Artist B")
+        self.assertEqual(track["title"], "Title A")
+        self.assertEqual(track["spotifyId"], "spotifyid1")
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_description_no_update(self, mock_sleep, mock_call):
+        youtube = MagicMock()
+        
+        current_tracks = []
+        target_tracks = ["new1"]
+        
+        insert_mock = MagicMock()
+        insert_mock.execute.return_value = {"id": "svid_new1"}
+        youtube.playlistItems().insert.return_value = insert_mock
+        
+        sync_playlist(
+            youtube,
+            playlist_id="pl_123",
+            current_tracks=current_tracks,
+            new_video_ids=target_tracks,
+            target_title="Spotify Weekly Global Top 200",
+            target_description="desc",
+            existing_description="desc"  # identical to target_description
+        )
+        
+        # Verify description update is NOT called
+        youtube.playlists().update.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

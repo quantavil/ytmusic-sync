@@ -35,14 +35,21 @@ def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=
 def clean_string(s):
     if not s:
         return ""
-    # Normalize unicode to decompose accents (e.g. ń -> n, Ÿ -> Y)
+    # Decompose accents to separate diacritics from base letters
     s = unicodedata.normalize('NFKD', s)
-    s = s.encode('ascii', 'ignore').decode('ascii')
-    
-    # Lowercase, remove non-alphanumeric characters, and collapse spaces
-    s = s.lower()
-    s = re.sub(r"[^a-z0-9\s]", "", s)
-    return " ".join(s.split())
+    cleaned = []
+    for c in s:
+        cat = unicodedata.category(c)
+        # Keep letters (L), numbers (N), and spaces
+        if cat.startswith(('L', 'N')) or c.isspace():
+            cleaned.append(c)
+        # Keep spacing/nonspacing marks (M) but discard standard diacritical marks (U+0300 - U+036F)
+        elif cat.startswith('M'):
+            if 0x0300 <= ord(c) <= 0x036F:
+                continue
+            cleaned.append(c)
+    res = "".join(cleaned).lower()
+    return " ".join(res.split())
 
 def clean_title(title):
     if not title:
@@ -137,17 +144,4 @@ def parse_num(raw):
     raw_clean = re.sub(r"[^\d]", "", raw)
     return int(raw_clean) if raw_clean else 0
 
-def get_auth_file(auth_path):
-    if auth_path:
-        if not Path(auth_path).exists():
-            print(f"Error: Specified auth file not found: {auth_path}")
-            sys.exit(1)
-        return auth_path
-        
-    p = Path("browser.json")
-    if p.exists():
-        return str(p)
-            
-    print("Error: No authentication file found (browser.json).")
-    print("Please run the authentication setup first.")
-    sys.exit(1)
+
