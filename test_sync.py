@@ -75,6 +75,19 @@ class TestSyncBot(unittest.TestCase):
         # Video title with pipe stripped
         self.assertTrue(title_matches("Labon Ko", {"title": "Labon Ko - (Lyrics) | Bhool Bhulaiyaa | Pritam"}))
 
+        # Version mismatches (Remix, Acoustic, Instrumental, Live, Cover, Tribute, Karaoke)
+        self.assertFalse(title_matches("Espresso", {"title": "Espresso (Remix)"}))
+        self.assertFalse(title_matches("Espresso", {"title": "Espresso (Acoustic Version)"}))
+        self.assertFalse(title_matches("Espresso", {"title": "Espresso (Instrumental)"}))
+        self.assertFalse(title_matches("Espresso", {"title": "Espresso (Live)"}))
+        self.assertFalse(title_matches("Espresso", {"title": "Espresso (Cover)"}))
+        self.assertFalse(title_matches("Espresso", {"title": "Espresso (Karaoke)"}))
+        
+        # Matching versions
+        self.assertTrue(title_matches("Espresso (Remix)", {"title": "Espresso (Remix)"}))
+        self.assertTrue(title_matches("Espresso - Remix", {"title": "Espresso (rmx)"}))
+        self.assertTrue(title_matches("Tribute", {"title": "Tribute"}))
+
     def test_artist_matches(self):
         # Exact match
         self.assertTrue(artist_matches("The Weeknd", {"artists": [{"name": "The Weeknd"}]}))
@@ -94,6 +107,12 @@ class TestSyncBot(unittest.TestCase):
         self.assertFalse(artist_matches("Ana", {"artists": [{"name": "Anastasia"}]}))
         self.assertFalse(artist_matches("War", {"artists": [{"name": "Warpaint"}]}))
         self.assertFalse(artist_matches("Ari", {"artists": [{"name": "Arijit Singh"}]}))
+
+        # Rejecting tribute/cover/karaoke acts
+        self.assertFalse(artist_matches("Taylor Swift", {"artists": [{"name": "Taylor Swift Tribute Band"}]}))
+        self.assertFalse(artist_matches("Taylor Swift", {"artists": [{"name": "Taylor Swift Cover Band"}]}))
+        self.assertFalse(artist_matches("Taylor Swift", {"artists": [{"name": "Karaoke Taylor Swift"}]}))
+        self.assertTrue(artist_matches("The Cover Girls", {"artists": [{"name": "The Cover Girls"}]}))
 
     def test_retry_operation_success(self):
         call_count = 0

@@ -77,6 +77,25 @@ def title_matches(target_title, result, threshold=85):
     handles artist relevance — we only need to verify the title matches.
     """
     res_title = result.get("title", "")
+    if not res_title:
+        return False
+        
+    target_lower = target_title.lower()
+    res_lower = res_title.lower()
+    
+    # Check for version mismatches (e.g. remix, acoustic, instrumental, live, cover, tribute, karaoke)
+    # Target and result must align on whether these tags are present.
+    # Note: 'rmx' is treated as synonymous with 'remix'
+    has_target_remix = "remix" in target_lower or "rmx" in target_lower
+    has_res_remix = "remix" in res_lower or "rmx" in res_lower
+    if has_target_remix != has_res_remix:
+        return False
+        
+    version_keywords = ["acoustic", "instrumental", "live", "cover", "tribute", "karaoke"]
+    for kw in version_keywords:
+        if (kw in target_lower) != (kw in res_lower):
+            return False
+            
     clean_target = clean_title(target_title)
     clean_result = clean_title(res_title)
     ratio = fuzz.WRatio(clean_target, clean_result)
@@ -92,6 +111,14 @@ def artist_matches(target_artist, result, threshold=85):
     res_artists = [a.get("name", "") for a in result.get("artists", [])]
     clean_target = clean_string(target_artist)
     
+    # Avoid matching tribute/cover/karaoke acts if the target artist doesn't explicitly contain them
+    target_lower = target_artist.lower()
+    for ra in res_artists:
+        ra_lower = ra.lower()
+        for kw in ["tribute", "cover", "karaoke"]:
+            if kw in ra_lower and kw not in target_lower:
+                return False
+                
     # Split duos/collabs to check components
     components = [clean_string(c) for c in re.split(r"[-–—,&]|\band\b", target_artist)]
     components = [c for c in components if c]
