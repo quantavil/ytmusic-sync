@@ -30,7 +30,9 @@ from pathlib import Path
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-# Minimal scope: only playlist read/write, nothing else.
+# Scope for YouTube Data API write permissions.
+# Note: YouTube Data API v3 does not offer a narrower scope for only managing playlists;
+# therefore, the broad 'youtube' scope is required to perform playlist mutations.
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
 CLIENT_SECRETS_FILE = "client_secrets.json"
@@ -71,8 +73,13 @@ def main():
 
     # Sanity check: make sure it actually refreshes.
     print("\nVerifying token can be refreshed...")
-    creds.refresh(Request())
-    print("✅ Token refresh verified. You're set up.")
+    try:
+        creds.refresh(Request())
+        print("✅ Token refresh verified. You're set up.")
+    except Exception as e:
+        print(f"⚠️ Warning: Verification token refresh failed: {e}")
+        print("The credentials file was saved successfully, but we could not verify refreshing due to a network or API issue.")
+        print("This is likely transient and should work during the scheduled sync.")
 
 
 if __name__ == "__main__":

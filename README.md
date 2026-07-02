@@ -42,8 +42,10 @@ To write and update playlists in your YouTube Music library, you must authentica
    - Save the downloaded file as `client_secrets.json` in the root of this directory.
 
 2. **Generate Token:**
-   Run the setup script:
+   Run the setup script using either of the following commands:
    ```bash
+   uv run python3 auth_google.py
+   # OR
    .venv/bin/python auth_google.py
    ```
    Follow the on-screen instructions to log into your Google Account in the browser and grant the requested permissions. This generates `token.json`.
@@ -52,22 +54,31 @@ To write and update playlists in your YouTube Music library, you must authentica
 
 ## 🚀 Running the Sync
 
-Once authentication is configured (having `token.json` in this directory), run the sync script:
+Once authentication is configured (having `token.json` in this directory), run the sync script using either the `uv` tool or the direct virtual environment interpreter:
 
 ### Sync Spotify Global Chart
 ```bash
+uv run python3 sync.py --country global
+# OR
 .venv/bin/python sync.py --country global
 ```
 
 ### Sync Spotify India Chart
 ```bash
+uv run python3 sync.py --country in
+# OR
 .venv/bin/python sync.py --country in
 ```
 
 ### Dry Run (Test without mutating playlists)
 ```bash
+uv run python3 sync.py --country global --dry-run
+# OR
 .venv/bin/python sync.py --country global --dry-run
 ```
+
+> [!IMPORTANT]
+> **YouTube API Quota Limits:** YouTube Data API v3 has a default daily project quota of 10,000 units. Since adding, updating, or deleting a playlist item costs 50 quota units, a cold-start sync of a 200-track playlist consumes the entire daily budget (200 * 50 = 10,000 units). If you run both Global and India syncs back-to-back on a fresh setup, you will likely encounter a `QuotaExceededError`. To prevent this, consider requesting a quota increase in Google Cloud Console or running them on separate days initially. Once cached locally under `data/`, subsequent runs only mutate changes and use minimal quota.
 
 ### ⚡ One-Click Local Sync (Linux)
 You can synchronize both Global and India charts sequentially in a single step using the provided helper shell script:

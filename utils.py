@@ -15,10 +15,12 @@ BASE_URL = "https://kworb.net/spotify/country"
 
 def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=False, fatal=True, error_msg="Operation failed"):
     current_delay = delay
+    last_exception = None
     for attempt in range(attempts):
         try:
             return func()
         except Exception as e:
+            last_exception = e
             if attempt < attempts - 1:
                 wait_time = delay * (attempt + 1) if linear_backoff else current_delay
                 print(f"  ⚠ {error_msg} (attempt {attempt + 1}/{attempts}) failed: {e}. Retrying in {wait_time}s...")
@@ -28,7 +30,10 @@ def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=
             else:
                 print(f"❌ Error: {error_msg} failed after {attempts} attempts: {e}")
                 if fatal:
-                    sys.exit(1)
+                    if last_exception:
+                        raise last_exception
+                    else:
+                        raise RuntimeError(f"{error_msg} failed after {attempts} attempts")
                 else:
                     return None
 

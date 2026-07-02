@@ -29,4 +29,6 @@ fi
 echo "===================================================="
 echo
 
-read -p "Press [Enter] to close this window..."
+if [ -t 0 ]; then
+    read -p "Press [Enter] to close this window..."
+fi

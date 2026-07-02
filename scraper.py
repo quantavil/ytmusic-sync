@@ -132,7 +132,7 @@ def parse_kworb_html(html_content, country_code):
             continue
             
         change = cells[col_change].get_text(strip=True)
-        if not change or change in ("0", "--", "—"):
+        if not change or change in ("0", "--", "—", "="):
             change = "0"
             
         track_cell = cells[col_track]

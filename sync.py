@@ -51,9 +51,8 @@ def parse_args():
         default=0.90,
         help="Minimum fraction of tracks that must resolve to a YouTube Music ID "
              "for this week to be marked as fully synced (default: 0.90). Below this, "
-             "the sync still runs with whatever resolved, but the cache file is NOT "
-             "written, so the next run retries the missing tracks instead of silently "
-             "treating the week as done."
+             "the live playlist is NOT touched this run, and the cache is written with "
+             "a '-partial' weekDate so the next run retries the missing tracks."
     )
     return parser.parse_args()
 
@@ -110,33 +109,38 @@ def main():
             return
 
         # Partial-failure guard: if too many tracks failed to resolve (transient
-        # search errors, etc.), still sync what we have, but do NOT write the
-        # cache file with the clean weekDate — otherwise should_skip_sync() would
-        # treat this week as fully done and never retry the missing tracks until
-        # next week.
+        # search errors, etc.), do NOT write to the live playlist to prevent truncating it.
+        # Still write the cache file with a "-partial" weekDate to preserve already resolved track IDs.
         resolve_ratio = (resolved_count + cached_count) / len(tracks) if tracks else 1.0
         partial_failure = resolve_ratio < args.min_resolve_ratio
         if partial_failure:
             print(f"⚠️ Warning: Only {resolve_ratio:.1%} of tracks resolved (< {args.min_resolve_ratio:.0%} threshold, "
-                  f"{failed_count} failed). Will sync with what resolved, but will NOT mark {week_date} as "
-                  f"fully synced — next run will retry the missing tracks.")
+                  f"{failed_count} failed). Skipping live playlist mutations to protect against truncation. "
+                  f"Next run will retry the missing tracks.")
 
         if args.dry_run:
             print("\n--- DRY RUN ACTIVE ---")
             print(f"Would save updated data cache to {args.data_dir}/{args.country}.json")
-            print(f"Would sync to playlist: Spotify Weekly {country_name} Top 200")
-            print(f"Tracks to add (first 5): {new_video_ids[:5]}")
+            if not partial_failure:
+                print(f"Would sync to playlist: Spotify Weekly {country_name} Top 200")
+                print(f"Tracks to add (first 5): {new_video_ids[:5]}")
+            else:
+                print("Would skip playlist synchronization due to partial resolution failure.")
             print("Dry run complete. No mutations performed.")
             return
             
-        # 4. Find or Create Playlist
-        target_title = f"Spotify Weekly {country_name} Top 200"
-        target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
-        
-        playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, target_title, target_description)
-        
-        # 5. Sync Playlist
-        sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_description, data_dir=args.data_dir)
+        if not partial_failure:
+            # 4. Find or Create Playlist
+            target_title = f"Spotify Weekly {country_name} Top 200"
+            target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
+            
+            playlist_id, current_tracks, existing_description = find_or_create_playlist(youtube, target_title, target_description)
+            
+            # 5. Sync Playlist
+            sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_description, data_dir=args.data_dir)
+            
+            playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
+            print(f"\n🎉 Sync Complete! Playlist URL: {playlist_url}")
         
         # Save the updated chart data with resolved IDs to file (delayed to final step).
         # Write cache even on partial resolution failure to preserve resolved IDs,
@@ -153,9 +157,6 @@ def main():
                 json.dump(chart, f, indent=2, ensure_ascii=False)
             print(f"Saved updated data to {out_file}")
         
-        playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
-        print(f"\n🎉 Sync Complete! Playlist URL: {playlist_url}")
-        
     except AuthError as e:
         print(f"\n❌ Authentication Failure: {e}")
         print("Please run auth_google.py to set up your authorization credentials.")
@@ -164,6 +165,10 @@ def main():
     except QuotaExceededError as e:
         print(f"\n❌ Quota Exceeded: {e}")
         print("The synchronization aborted because the Google YouTube Data API quota was exhausted.")
+        import sys
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Unexpected Error: {e}")
         import sys
         sys.exit(1)
 

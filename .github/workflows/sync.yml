@@ -29,6 +29,14 @@ jobs:
         run: |
           uv pip install -r requirements.txt --system
 
+      - name: Cache resolved track data
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: ytmusic-sync-data-${{ github.run_id }}
+          restore-keys: |
+            ytmusic-sync-data-
+
       - name: Restore Google OAuth Token
         run: |
           echo '${{ secrets.YT_OAUTH_TOKEN_JSON }}' > token.json

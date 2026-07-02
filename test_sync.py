@@ -144,7 +144,7 @@ class TestSyncBot(unittest.TestCase):
         def dummy_func():
             raise ValueError("Fatal error")
             
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(ValueError):
             retry_operation(dummy_func, attempts=3, delay=0.01, fatal=True)
 
     def test_retry_operation_non_fatal(self):
@@ -209,7 +209,7 @@ class TestSyncBot(unittest.TestCase):
             </tr>
             <tr>
                 <td>2</td>
-                <td>+1</td>
+                <td>=</td>
                 <td><a href="artist/2.html">Artist B</a> - <a href="track/spotifyid2.html">Title B</a></td>
                 <td>5</td>
                 <td>2</td>
@@ -236,6 +236,9 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(track1["streams"], 1500000)
         self.assertEqual(track1["peak"], 1)
         self.assertEqual(track1["weeks"], 10)
+
+        track2 = parsed["tracks"][1]
+        self.assertEqual(track2["change"], "0")
 
     def test_parse_kworb_html_zero_rows(self):
         mock_html_empty = "<html><body><table><tr><th>Pos</th></tr></table></body></html>"
@@ -704,6 +707,104 @@ class TestSyncBot(unittest.TestCase):
         
         # Verify description update is NOT called
         youtube.playlists().update.assert_not_called()
+
+    def test_load_ytmusic_cache_multi_file(self):
+        from playlist_sync import load_ytmusic_cache
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache1 = {
+                "tracks": [
+                    {"spotifyId": "sp1", "ytMusicId": "yt1", "artist": "Artist A", "title": "Title A"}
+                ]
+            }
+            cache2 = {
+                "tracks": [
+                    {"spotifyId": "sp2", "ytMusicId": "yt2", "artist": "Artist B", "title": "Title B"}
+                ]
+            }
+            with open(Path(tmpdir) / "global.json", "w", encoding="utf-8") as f:
+                json.dump(cache1, f)
+            with open(Path(tmpdir) / "in.json", "w", encoding="utf-8") as f:
+                json.dump(cache2, f)
+                
+            cache_by_id, cache_by_name = load_ytmusic_cache(tmpdir)
+            self.assertEqual(cache_by_id.get("sp1"), "yt1")
+            self.assertEqual(cache_by_id.get("sp2"), "yt2")
+            self.assertEqual(cache_by_name.get("artist a|||title a"), "yt1")
+            self.assertEqual(cache_by_name.get("artist b|||title b"), "yt2")
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_deletes_orphaned(self, mock_sleep, mock_call):
+        youtube = MagicMock()
+        current_tracks = [
+            {"videoId": "vid1", "setVideoId": "svid1"},
+            {"videoId": None, "setVideoId": "svid2"}
+        ]
+        new_video_ids = ["vid1"]
+        
+        delete_mock = MagicMock()
+        youtube.playlistItems().delete.return_value = delete_mock
+        youtube.playlists().update.return_value = MagicMock()
+        
+        sync_playlist(
+            youtube,
+            playlist_id="pl_123",
+            current_tracks=current_tracks,
+            new_video_ids=new_video_ids,
+            target_title="Spotify Weekly Global Top 200",
+            target_description="desc",
+            existing_description="desc"
+        )
+        
+        youtube.playlistItems().delete.assert_called_once_with(id="svid2")
+
+    @patch("sync.parse_args")
+    @patch("sync.scrape_kworb")
+    @patch("sync.should_skip_sync", return_value=False)
+    @patch("sync.YTMusic")
+    @patch("youtube_client.get_youtube_client")
+    @patch("sync.load_ytmusic_cache", return_value=({}, {}))
+    @patch("sync.resolve_track_ids")
+    @patch("sync.find_or_create_playlist")
+    @patch("sync.sync_playlist")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("sync.Path")
+    @patch("json.dump")
+    def test_main_sync_skips_on_partial_failure(
+        self, mock_json_dump, mock_path, mock_open, mock_sync_playlist, mock_find_create,
+        mock_resolve, mock_load_cache, mock_yt_client, mock_ytmusic, mock_should_skip,
+        mock_scrape, mock_parse_args
+    ):
+        from sync import main as sync_main
+        
+        args = MagicMock()
+        args.country = "global"
+        args.data_dir = "data"
+        args.auth = None
+        args.dry_run = False
+        args.force = False
+        args.min_resolve_ratio = 0.90
+        mock_parse_args.return_value = args
+        
+        mock_scrape.return_value = {
+            "country": "global",
+            "countryName": "Global",
+            "weekDate": "2026-07-01",
+            "tracks": [{"spotifyId": f"sp{i}"} for i in range(10)]
+        }
+        
+        mock_resolve.return_value = (
+            [{"spotifyId": f"sp{i}", "ytMusicId": f"yt{i}"} for i in range(8)] + [{"spotifyId": "sp8"}, {"spotifyId": "sp9"}],
+            5, 3, 2
+        )
+        
+        sync_main()
+        
+        mock_find_create.assert_not_called()
+        mock_sync_playlist.assert_not_called()
+        
+        called_data = mock_json_dump.call_args[0][0]
+        self.assertEqual(called_data["weekDate"], "2026-07-01-partial")
 
 if __name__ == "__main__":
     unittest.main()

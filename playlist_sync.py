@@ -143,9 +143,9 @@ def find_or_create_playlist(youtube, target_title, target_description):
 def _search_and_match(yt, query, title, artist, filter_type):
     """
     Runs a single YTM search (with retry on transient failure) and returns
-    (matched_result_or_None, matched_index_or_-1).
+    (matched_result_or_None, matched_index_or_-1, is_artist_matched).
     Retries are non-fatal: a track that still fails after retries returns
-    (None, -1) rather than crashing the whole run.
+    (None, -1, False) rather than crashing the whole run.
     """
     def do_search():
         time.sleep(random.uniform(0.3, 0.8))  # rate-limit courtesy delay
@@ -159,17 +159,17 @@ def _search_and_match(yt, query, title, artist, filter_type):
         error_msg=f"YTMusic '{filter_type}' search for '{query}'"
     )
     if not results:
-        return None, -1
+        return None, -1, False
 
     candidate_result, candidate_idx = None, -1
     for r_idx, res in enumerate(results[:3]):
         if title_matches(title, res):
             if artist_matches(artist, res):
-                return res, r_idx
+                return res, r_idx, True
             elif candidate_result is None:
                 candidate_result, candidate_idx = res, r_idx
 
-    return candidate_result, candidate_idx
+    return candidate_result, candidate_idx, False
 
 
 def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
@@ -211,7 +211,7 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
 
         query = f"{artist} {title}"
         search_type = "songs"
-        matched_result, matched_idx = _search_and_match(yt, query, title, artist, "songs")
+        matched_result, matched_idx, is_artist_matched = _search_and_match(yt, query, title, artist, "songs")
 
         # Fall back to videos if songs search found nothing OR the songs match
         # had no usable videoId (edge case: matched metadata but no playable id).
@@ -220,7 +220,7 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
                 print(f"    ⏭️ Songs search miss for '{query}', trying videos...")
             else:
                 print(f"  ⚠ Songs match for '{query}' had no videoId, trying videos...")
-            matched_result, matched_idx = _search_and_match(yt, query, title, artist, "videos")
+            matched_result, matched_idx, is_artist_matched = _search_and_match(yt, query, title, artist, "videos")
             search_type = "videos"
 
         if matched_result and matched_result.get("videoId"):
@@ -228,7 +228,12 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
             res_title = matched_result.get("title", "")
             res_artists = ", ".join([a.get("name", "") for a in matched_result.get("artists", []) if a.get("name")])
             match_name = f"{res_artists} - {res_title}" if res_artists else res_title
-            print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' ➔ '{match_name}' ({yt_id}) (result {matched_idx + 1})")
+            
+            if is_artist_matched:
+                print(f"    🔍 [{search_type.capitalize()}] Resolved '{query}' ➔ '{match_name}' ({yt_id}) (result {matched_idx + 1})")
+            else:
+                print(f"    ⚠️ Warning: Fallback Title-Only Match (Artist Mismatch) for '{query}' ➔ '{match_name}' ({yt_id}) (result {matched_idx + 1})")
+                
             t["ytMusicId"] = yt_id
             if spotify_id:
                 cache_by_id[spotify_id] = yt_id
@@ -245,11 +250,20 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
 def _log_orphaned_tracks(data_dir, playlist_id, orphaned):
     """Append unremovable playlist entries to a durable log so they don't just
     scroll off in CI output. These are entries YTM returned without a
-    setVideoId/videoId pair (usually unavailable/region-blocked videos)."""
+    setVideoId (unmanageable videos)."""
     if not orphaned:
         return
     log_path = Path(data_dir) / "orphaned_tracks.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Check size to prevent unbounded growth (rotate at 1MB)
+    if log_path.exists() and log_path.stat().st_size > 1024 * 1024:
+        try:
+            backup_path = log_path.with_suffix(".log.old")
+            log_path.replace(backup_path)
+        except Exception as e:
+            print(f"Warning: Failed to rotate orphaned_tracks.log: {e}")
+            
     from datetime import datetime, timezone
     with open(log_path, "a", encoding="utf-8") as f:
         ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -259,10 +273,10 @@ def _log_orphaned_tracks(data_dir, playlist_id, orphaned):
 
 
 def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_description=None, data_dir="data"):
-    # 1. Identify orphaned tracks
-    orphaned = [t for t in current_tracks if not t.get("videoId") or not t.get("setVideoId")]
+    # 1. Identify truly orphaned tracks (lacking setVideoId)
+    orphaned = [t for t in current_tracks if not t.get("setVideoId")]
     if orphaned:
-        print(f"⚠️ Warning: {len(orphaned)} tracks lack videoId or setVideoId and cannot be managed.")
+        print(f"⚠️ Warning: {len(orphaned)} tracks lack setVideoId and cannot be managed.")
         _log_orphaned_tracks(data_dir, playlist_id, orphaned)
         
     # 2. Identify deletions and duplicates
@@ -273,9 +287,9 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
     for item in current_tracks:
         vid = item.get("videoId")
         item_id = item.get("setVideoId")
-        if not vid or not item_id:
+        if not item_id:
             continue
-        if vid not in new_video_ids or vid in seen_vids:
+        if not vid or vid not in new_video_ids or vid in seen_vids:
             to_delete.append(item_id)
         else:
             seen_vids.add(vid)

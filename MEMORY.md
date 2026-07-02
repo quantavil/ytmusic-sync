@@ -49,3 +49,8 @@ ytmusic-sync/
 - [2026-07-02] Tracks with a single anchor tag on Kworb had empty artists. → Fixed by parsing raw text inside the td and splitting by `" - "` to extract the artist.
 - [2026-07-02] `auth.py` was calling `YTMusic.setup()` which is no longer a method on the `YTMusic` class in newer `ytmusicapi` versions. → Fixed by importing and calling the module-level `setup` function.
 - [2026-07-02] Mocking nested client builders using MagicMock in a loop with pageToken checks causes infinite loops in tests because default MagicMock attribute/method return values are truthy. → Fixed by explicitly setting list item and page token mocks to return None or empty results.
+- [2026-07-02] Live playlist mutated during partial resolution failure. → Fixed by skipping find/sync actions when resolution ratio is below min_resolve_ratio while still saving partial cache.
+- [2026-07-02] Deleted/blocked tracks skipped during deletion identification loop due to missing videoId check. → Fixed by identifying deletion targets solely based on setVideoId presence and absence from target videoId list.
+- [2026-07-02] Low-level helper retry_operation terminated program directly with sys.exit. → Fixed by raising exceptions instead, handled globally in entrypoint main().
+- [2026-07-02] CI workflow lacked data directory persistence. → Added actions/cache workflow steps for data/ folder caching.
+- [2026-07-02] auth_google.py crashed on network blips during verify step, and sync.sh blocked non-interactively. → Wrapped verify step in try-except; added TTY check before sync.sh read prompt.
