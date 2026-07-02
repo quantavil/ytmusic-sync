@@ -64,6 +64,13 @@ Once authentication is configured (having `browser.json` in this directory), run
 .venv/bin/python sync.py --country global --dry-run
 ```
 
+### ⚡ One-Click Local Sync (Linux)
+You can synchronize both Global and India charts sequentially in a single step using the provided helper shell script:
+```bash
+./sync.sh
+```
+Alternatively, double-click `sync.sh` in your graphical file manager and select **"Run in Terminal"**.
+
 ---
 
 ## ⚙️ Command-Line Options

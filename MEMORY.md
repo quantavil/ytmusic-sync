@@ -14,10 +14,12 @@ ytmusic-sync/
 ├── scraper.py         # Parsing and HTML scraping logic for Kworb weekly charts
 ├── playlist_sync.py   # YouTube Music library operations and cache checks
 ├── sync.py            # Orchestrator and entry point CLI script
+├── sync.sh            # One-click helper shell script to sync all charts locally
 ├── test_sync.py       # Offline unit tests for utility and parsing logic
 ├── requirements.txt   # Project dependencies (ytmusicapi, requests, beautifulsoup4)
 ├── browser.json       # Generated browser credentials (must be kept out of version control)
 └── README.md          # User setup and execution documentation
+
 
 ## Conventions
 - Use `uv` for python dependency management.
