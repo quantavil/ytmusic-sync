@@ -82,14 +82,30 @@ class TransientAPIError(RuntimeError):
     pass
 
 
-def call(func, attempts=3, delay=2, error_msg="YouTube API call"):
+_quota_units_used = 0
+
+
+def get_quota_used():
+    global _quota_units_used
+    return _quota_units_used
+
+
+def reset_quota_used():
+    global _quota_units_used
+    _quota_units_used = 0
+
+
+def call(func, attempts=3, delay=2, error_msg="YouTube API call", quota_cost=0):
     """
     Executes func() (a zero-arg callable wrapping a googleapiclient .execute()
     call) with classification-aware retry.
     """
     def run_and_classify():
+        global _quota_units_used
         try:
-            return func()
+            res = func()
+            _quota_units_used += quota_cost
+            return res
         except HttpError as e:
             kind = _classify_http_error(e)
             if kind == "quota":

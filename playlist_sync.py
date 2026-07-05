@@ -36,6 +36,32 @@ def load_ytmusic_cache(data_dir):
             
     return cache_by_id, cache_by_name
 
+def build_ytid_to_name_map(tracks, data_dir):
+    mapping = {}
+    data_path = Path(data_dir)
+    if data_path.exists():
+        for p in data_path.glob("*.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for t in data.get("tracks", []):
+                        yt_id = t.get("ytMusicId")
+                        artist = t.get("artist")
+                        title = t.get("title")
+                        if yt_id and artist and title:
+                            mapping[yt_id] = f"{artist} - {title}"
+            except Exception:
+                pass
+
+    for t in tracks:
+        yt_id = t.get("ytMusicId")
+        artist = t.get("artist")
+        title = t.get("title")
+        if yt_id and artist and title:
+            mapping[yt_id] = f"{artist} - {title}"
+            
+    return mapping
+
 def should_skip_sync(out_file, week_date, force, dry_run):
     if out_file.exists() and not force and not dry_run:
         try:
@@ -65,7 +91,7 @@ def find_or_create_playlist(youtube, target_title, target_description):
                 pageToken=next_page_token
             ).execute()
             
-        res = call(list_playlists, error_msg="List mine playlists")
+        res = call(list_playlists, error_msg="List mine playlists", quota_cost=1)
         items = res.get("items", [])
         
         for pl in items:
@@ -102,7 +128,7 @@ def find_or_create_playlist(youtube, target_title, target_description):
                 }
             ).execute()
             
-        res = call(create_pl, error_msg="Create playlist")
+        res = call(create_pl, error_msg="Create playlist", quota_cost=50)
         playlist_id = res["id"]
         print(f"Created playlist ID: {playlist_id}")
         is_new_playlist = True
@@ -125,7 +151,7 @@ def find_or_create_playlist(youtube, target_title, target_description):
                     pageToken=next_page_token
                 ).execute()
                 
-            res = call(list_items, error_msg="List playlist items")
+            res = call(list_items, error_msg="List playlist items", quota_cost=1)
             for item in res.get("items", []):
                 snippet = item.get("snippet", {})
                 video_id = snippet.get("resourceId", {}).get("videoId")
@@ -323,7 +349,14 @@ def get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=Fal
     return len(current_state) - 1 if is_move else len(current_state)
 
 
-def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title=None, existing_description=None, data_dir="data"):
+def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title=None, existing_description=None, data_dir="data", track_names=None):
+    if track_names is None:
+        track_names = {}
+
+    def get_track_label(vid):
+        name = track_names.get(vid)
+        return f"'{name}' ({vid})" if name else vid
+
     # 1. Identify truly orphaned tracks (lacking setVideoId)
     orphaned = [t for t in current_tracks if not t.get("setVideoId")]
     if orphaned:
@@ -360,7 +393,7 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
         if item_id not in lis_set_ids:
             if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
                 adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
-                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
+                print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
                 
                 def update_item():
                     return youtube.playlistItems().update(
@@ -378,7 +411,7 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
                         }
                     ).execute()
                     
-                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}")
+                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
                 current_state.remove(item)
                 current_state.insert(adjusted_idx, item)
                 time.sleep(0.2)
@@ -397,7 +430,7 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
         if curr_idx == -1:
             # Video is not in the playlist yet -> Insert at the adjusted index
             adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=False)
-            print(f"Inserting new track {vid} at position {adjusted_idx}...")
+            print(f"Inserting new track {get_track_label(vid)} at position {adjusted_idx}...")
             
             def insert_item():
                 return youtube.playlistItems().insert(
@@ -414,7 +447,7 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
                     }
                 ).execute()
                 
-            res = call(insert_item, error_msg=f"Insert video {vid} at position {adjusted_idx}")
+            res = call(insert_item, error_msg=f"Insert video {vid} at position {adjusted_idx}", quota_cost=50)
             new_item_id = res["id"]
             current_state.insert(adjusted_idx, {"videoId": vid, "setVideoId": new_item_id})
             time.sleep(0.2)
@@ -422,7 +455,7 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
             # Already in the playlist. Check if it is at the correct position (accounting for deletions)
             if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
                 adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
-                print(f"Repositioning track {vid} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
+                print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
                 item_id = current_state[curr_idx]["setVideoId"]
                 
                 def update_item():
@@ -441,7 +474,7 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
                         }
                     ).execute()
                     
-                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}")
+                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
                 item = current_state.pop(curr_idx)
                 current_state.insert(adjusted_idx, item)
                 time.sleep(0.2)
@@ -455,10 +488,10 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
         print(f"Removing {len(to_delete)} old/duplicate tracks from YouTube Music playlist...")
         for idx, item in enumerate(to_delete):
             item_id = item["setVideoId"]
-            print(f"Removing track {idx+1}/{len(to_delete)} (ID: {item_id})...")
+            print(f"Removing track {idx+1}/{len(to_delete)}: {get_track_label(item['videoId'])} (ID: {item_id})...")
             def delete_item():
                 return youtube.playlistItems().delete(id=item_id).execute()
-            call(delete_item, error_msg=f"Delete playlist item {item_id}")
+            call(delete_item, error_msg=f"Delete playlist item {item_id}", quota_cost=50)
             time.sleep(0.2)
         print("Removal of old tracks complete.")
     else:
@@ -484,5 +517,5 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
             }
         ).execute()
         
-    call(edit_pl, error_msg="Update playlist details")
+    call(edit_pl, error_msg="Update playlist details", quota_cost=50)
     print("Playlist details update completed.")

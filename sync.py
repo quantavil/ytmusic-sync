@@ -11,7 +11,8 @@ from playlist_sync import (
     should_skip_sync,
     resolve_track_ids,
     find_or_create_playlist,
-    sync_playlist
+    sync_playlist,
+    build_ytid_to_name_map
 )
 
 def parse_args():
@@ -158,7 +159,8 @@ def main():
             playlist_id, current_tracks, existing_title, existing_description = find_or_create_playlist(youtube, target_title, target_description)
             
             # 5. Sync Playlist
-            sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title, existing_description, data_dir=args.data_dir)
+            track_names = build_ytid_to_name_map(tracks, args.data_dir)
+            sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title, existing_description, data_dir=args.data_dir, track_names=track_names)
             
             playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
             print(f"\n🎉 Sync Complete! Playlist URL: {playlist_url}")
@@ -181,6 +183,12 @@ def main():
         import sys
         sys.exit(1)
     finally:
+        try:
+            from youtube_client import get_quota_used
+            print(f"ℹ️ Estimated YouTube Data API quota units used: {get_quota_used()}")
+        except Exception as q_err:
+            print(f"⚠️ Warning: Could not retrieve API quota usage: {q_err}")
+
         # Save cache if we resolved any new tracks but did not complete the sync.
         # We must mark it as partial because the sync did not complete successfully.
         if chart and resolved_any and not args.dry_run and not sync_success:
