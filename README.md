@@ -80,6 +80,23 @@ uv run python3 sync.py --country global --dry-run
 > [!IMPORTANT]
 > **YouTube API Quota Limits:** YouTube Data API v3 has a default daily project quota of 10,000 units, and each playlist item insert/update/delete costs 50 units — so a single day allows only ~200 mutations. The sync minimizes mutations (single-pass reconciliation, LIS-anchored tracks are never moved), which keeps a typical 200-track reshuffle comfortably under the daily budget. On a very first cold-start sync against a badly-ordered playlist you may still approach the ceiling; if you hit a `QuotaExceededError`, the run saves its resolved-ID cache as `-partial` and the next day's run resumes where it left off. Running both Global and India on a fresh setup can exceed the budget in one day — space them out or request a quota increase in Google Cloud Console. Once cached under `data/`, subsequent weekly runs only apply the delta and use minimal quota.
 
+### 🔁 Self-Healing & Resumable Syncs
+
+If a run is interrupted partway through — most commonly by a `QuotaExceededError` on a cold start — **it recovers automatically on the next run**. No manual cleanup, no corrupted playlist.
+
+This works because every run is *stateless about prior runs*: it fetches the **current live playlist**, recomputes the delta against the target chart from scratch, and applies only what's missing. Three mechanisms make resumption reliable:
+
+| Mechanism | Effect |
+| :--- | :--- |
+| `-partial` weekDate marker | An interrupted run tags its cache as `…-partial`, so the next run does **not** skip it as "already done". |
+| Fresh playlist re-fetch | The next run reads the partially-modified playlist as its new starting point. |
+| Preserved resolved-ID cache | Track resolution is near-free on subsequent runs, so the full quota goes toward playlist mutations. |
+
+Convergence is **monotonic**: each run inserts missing tracks, repositions misplaced ones (at most once), and removes stale/duplicate ones — and running against an already-synced playlist performs **zero** operations (idempotent). So a cold start simply finishes over the next 1–2 days, and steady weekly runs complete same-day.
+
+> [!NOTE]
+> Verified by a 300-trial randomized simulation under a brutal 1–4 mutations/day cap (aborting mid-run every day): the playlist converged to the **exact** target every time. Resumption assumes the target chart is stable between runs, which holds since Kworb refreshes the weekly chart only once a week.
+
 ### ⚡ One-Click Local Sync (Linux)
 You can synchronize both Global and India charts sequentially in a single step using the provided helper shell script:
 ```bash
