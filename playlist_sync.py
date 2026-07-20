@@ -377,61 +377,33 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
             seen_vids.add(vid)
             remaining_current.append(item)
             
-    # A. Reorder the remaining current tracks first to match their relative target order.
-    # We use the Longest Increasing Subsequence (LIS) to minimize the number of move operations.
-    target_index_map = {vid: idx for idx, vid in enumerate(new_video_ids)}
+    # A. Determine which kept tracks can stay put.
+    # The Longest Increasing Subsequence (LIS) of the kept tracks (in target order)
+    # never needs to move; every other kept track is repositioned at most once.
     lis_set_ids = get_lis_elements(remaining_current, new_video_ids)
-    target_remaining = sorted(remaining_current, key=lambda x: target_index_map[x["videoId"]])
-    
-    print("Reordering existing tracks to match target relative order...")
-    for item in target_remaining:
-        vid = item["videoId"]
-        item_id = item["setVideoId"]
-        curr_idx = current_state.index(item)
-        target_idx = target_index_map[vid]
-        
-        if item_id not in lis_set_ids:
-            if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
-                adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
-                print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
-                
-                def update_item():
-                    return youtube.playlistItems().update(
-                        part="snippet",
-                        body={
-                            "id": item_id,
-                            "snippet": {
-                                "playlistId": playlist_id,
-                                "resourceId": {
-                                    "kind": "youtube#video",
-                                    "videoId": vid
-                                },
-                                "position": adjusted_idx
-                            }
-                        }
-                    ).execute()
-                    
-                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
-                current_state.remove(item)
-                current_state.insert(adjusted_idx, item)
-                time.sleep(0.2)
-                
-    # B. Insert new tracks at their correct indices (Add)
+
+    # B. Single left-to-right pass over the target order: insert missing tracks,
+    # reposition out-of-place kept tracks, and leave LIS-anchored tracks untouched.
+    #
+    # This is deliberately ONE pass. A previous version pre-sorted the kept tracks in
+    # a separate pass BEFORE inserting the new tracks; the inserts then shifted many of
+    # those just-sorted tracks back out of place, forcing a second move each (~50 quota
+    # units wasted per redundant move). Doing content + ordering together guarantees
+    # every track is moved at most once, which is the minimum for a given LIS.
     print(f"Synchronizing playlist content and order (Target tracks: {len(new_video_ids)})...")
     for target_idx, vid in enumerate(new_video_ids):
-        # Find where this video is in our current_state in memory
+        # Find where this video currently sits in our in-memory playlist model
         curr_idx = -1
         for idx, item in enumerate(current_state):
-            # Only match items that are part of the target list (ignore to_delete items at the end)
             if item["videoId"] == vid:
                 curr_idx = idx
                 break
-                
+
         if curr_idx == -1:
             # Video is not in the playlist yet -> Insert at the adjusted index
             adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=False)
             print(f"Inserting new track {get_track_label(vid)} at position {adjusted_idx}...")
-            
+
             def insert_item():
                 return youtube.playlistItems().insert(
                     part="snippet",
@@ -446,42 +418,49 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
                         }
                     }
                 ).execute()
-                
+
             res = call(insert_item, error_msg=f"Insert video {vid} at position {adjusted_idx}", quota_cost=50)
             new_item_id = res["id"]
             current_state.insert(adjusted_idx, {"videoId": vid, "setVideoId": new_item_id})
             time.sleep(0.2)
-        else:
-            # Already in the playlist. Check if it is at the correct position (accounting for deletions)
-            if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
-                adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
-                print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
-                item_id = current_state[curr_idx]["setVideoId"]
-                
-                def update_item():
-                    return youtube.playlistItems().update(
-                        part="snippet",
-                        body={
-                            "id": item_id,
-                            "snippet": {
-                                "playlistId": playlist_id,
-                                "resourceId": {
-                                    "kind": "youtube#video",
-                                    "videoId": vid
-                                },
-                                "position": adjusted_idx
-                            }
+            continue
+
+        # Already in the playlist.
+        item_id = current_state[curr_idx]["setVideoId"]
+
+        # LIS-anchored tracks are already in the correct relative order; leave them
+        # in place. They float to their correct absolute position for free as the
+        # tracks around them are inserted/moved.
+        if item_id in lis_set_ids:
+            continue
+
+        # Reposition only if not already at the correct position (accounting for
+        # tracks still pending deletion that occupy slots in current_state).
+        if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
+            adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
+            print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
+
+            def update_item():
+                return youtube.playlistItems().update(
+                    part="snippet",
+                    body={
+                        "id": item_id,
+                        "snippet": {
+                            "playlistId": playlist_id,
+                            "resourceId": {
+                                "kind": "youtube#video",
+                                "videoId": vid
+                            },
+                            "position": adjusted_idx
                         }
-                    ).execute()
-                    
-                call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
-                item = current_state.pop(curr_idx)
-                current_state.insert(adjusted_idx, item)
-                time.sleep(0.2)
-            else:
-                # Already in correct position relative to kept items
-                pass
-                
+                    }
+                ).execute()
+
+            call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
+            item = current_state.pop(curr_idx)
+            current_state.insert(adjusted_idx, item)
+            time.sleep(0.2)
+
     # C. Execute deletions last (Remove)
     to_delete = [item for item in current_state if item["videoId"] not in new_video_ids_set]
     if to_delete:

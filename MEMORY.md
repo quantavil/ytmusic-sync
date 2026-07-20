@@ -9,19 +9,22 @@ ytmusic-sync/
 │   └── workflows/
 │       └── sync.yml   # GitHub Actions workflow for scheduled daily sync using uv
 ├── data/              # Cached country charts and resolved ytMusicId entries
-├── utils.py           # Common constants and shared generic utilities
-├── scraper.py         # Parsing and HTML scraping logic for Kworb weekly charts
-├── playlist_sync.py   # YouTube Music library operations and cache checks
-├── sync.py            # Orchestrator and entry point CLI script
-├── sync.sh            # One-click helper shell script to sync all charts locally
-├── test_sync.py       # Offline unit tests for utility and parsing logic
-├── requirements.txt   # Project dependencies (ytmusicapi, requests, beautifulsoup4)
-└── README.md          # User setup and execution documentation
+├── utils.py                  # Common constants and shared generic utilities
+├── scraper.py                # Parsing and HTML scraping logic for Kworb weekly charts
+├── playlist_sync.py          # Playlist reconciliation, ID resolution, and cache checks
+├── youtube_client.py         # YouTube Data API v3 client + quota/auth-aware call() wrapper
+├── auth_google.py            # One-time OAuth setup that generates token.json
+├── sync.py                   # Orchestrator and entry point CLI script
+├── sync.sh                   # One-click helper shell script to sync all charts locally
+├── test_sync.py              # Offline unit tests for utility, parsing, and sync logic
+├── test_live_integration.py  # Optional live end-to-end integration tests
+├── requirements.txt          # Project dependencies
+└── README.md                 # User setup and execution documentation
 
 
 ## Conventions
 - Use `uv` for python dependency management.
-- Sync playlists using the safe add-then-remove flow to avoid empty-playlist states, keeping sequential resolution for cache safety.
+- Reconcile playlists in a SINGLE left-to-right pass (`sync_playlist`): insert new tracks, reposition out-of-order tracks at most once, delete dropped tracks last. LIS-anchored tracks are never moved. Keep resolution sequential for cache safety.
 
 ## Dependencies & Setup
 - `ytmusicapi>=1.12.1`
@@ -33,6 +36,7 @@ ytmusic-sync/
 
 ## Insights
 - Cache loaded from existing JSONs in `data/` prevents duplicate YouTube Music searches and speeds up subsequent runs.
+- Each playlist mutation (insert/update/delete) costs 50 Data API quota units, so the 10,000/day budget allows only ~200 mutations. Minimizing mutation count is the single most important lever for finishing a sync within one day. On quota exhaustion the cache is saved as `-partial` and the next run resumes.
 
 ## Blunders
 - [2026-07-01] YouTube Music search and library endpoints fail with 400 Bad Request when authenticated with OAuth client credentials. → YouTube changed backend APIs breaking OAuth clients in ytmusicapi. → Fixed by switching automated synchronization to use Browser Cookie authentication (`browser.json`) instead of OAuth, and routing searches through the authenticated client to avoid unauthenticated rate-limiting.
@@ -56,4 +60,5 @@ ytmusic-sync/
 - [2026-07-02] auth_google.py crashed on network blips during verify step, and sync.sh blocked non-interactively. → Wrapped verify step in try-except; added TTY check before sync.sh read prompt.
 - [2026-07-02] Deleted import of Path in youtube_client.py during refactoring. → Restored Path import.
 - [2026-07-02] Swapping delete-first logic for add-then-remove and removing position thresholds created index shifting bugs. → Fixed by implementing Longest Increasing Subsequence (LIS) optimal relative reordering prior to insertions.
+- [2026-07-20] `sync_playlist` reordered in TWO passes: a pre-sort of kept tracks, then insert-new + re-sort. Because inserts shifted the just-sorted tracks out of place, ~48 tracks were moved a SECOND time (~2,400 wasted quota units), pushing a first-time Global sync over the 10,000/day limit (10,005 used, aborted mid-delete). → Fixed by merging into a single left-to-right pass so each track is moved at most once; LIS anchors float into place for free. Same final playlist, ~24% fewer write ops (~202→~154), bringing the cold-start run under quota. Verified via 32 unit tests + a 200-track reshuffle simulation showing zero double-moves.
 

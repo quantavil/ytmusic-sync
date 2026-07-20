@@ -16,7 +16,7 @@ The bot will search for or create the following playlists in your YouTube Music 
 > [!NOTE]
 > If a playlist with the exact target title already exists in your library, the bot will reuse it. Otherwise, it will create a new public playlist.
 >
-> During sync, the bot uses an **add-then-remove** flow to update the playlist to match the latest chart sequence, avoiding empty-playlist states while ensuring correct ordering.
+> During sync, the bot reconciles the existing playlist against the latest chart in a **single left-to-right pass**: new tracks are inserted, out-of-order tracks are repositioned at most once, and dropped tracks are removed last. Tracks that are already in the correct relative order (the Longest Increasing Subsequence) are left untouched, so the number of quota-costing operations is kept to the minimum.
 
 ---
 
@@ -78,7 +78,7 @@ uv run python3 sync.py --country global --dry-run
 ```
 
 > [!IMPORTANT]
-> **YouTube API Quota Limits:** YouTube Data API v3 has a default daily project quota of 10,000 units. Since adding, updating, or deleting a playlist item costs 50 quota units, a cold-start sync of a 200-track playlist consumes the entire daily budget (200 * 50 = 10,000 units). If you run both Global and India syncs back-to-back on a fresh setup, you will likely encounter a `QuotaExceededError`. To prevent this, consider requesting a quota increase in Google Cloud Console or running them on separate days initially. Once cached locally under `data/`, subsequent runs only mutate changes and use minimal quota.
+> **YouTube API Quota Limits:** YouTube Data API v3 has a default daily project quota of 10,000 units, and each playlist item insert/update/delete costs 50 units — so a single day allows only ~200 mutations. The sync minimizes mutations (single-pass reconciliation, LIS-anchored tracks are never moved), which keeps a typical 200-track reshuffle comfortably under the daily budget. On a very first cold-start sync against a badly-ordered playlist you may still approach the ceiling; if you hit a `QuotaExceededError`, the run saves its resolved-ID cache as `-partial` and the next day's run resumes where it left off. Running both Global and India on a fresh setup can exceed the budget in one day — space them out or request a quota increase in Google Cloud Console. Once cached under `data/`, subsequent weekly runs only apply the delta and use minimal quota.
 
 ### ⚡ One-Click Local Sync (Linux)
 You can synchronize both Global and India charts sequentially in a single step using the provided helper shell script:
@@ -103,7 +103,7 @@ Alternatively, double-click `sync.sh` in your graphical file manager and select 
 
 ## 🤖 GitHub Actions Automation
 
-The repository includes a GitHub Actions workflow `.github/workflows/sync.yml` to automatically run the sync daily at **`03:50 UTC`**.
+The repository includes a GitHub Actions workflow `.github/workflows/sync.yml` to automatically run the sync daily at **`07:30 UTC`** (1:00 PM IST).
 
 ### Configuration Steps:
 1. Copy the contents of your locally generated `token.json`.
