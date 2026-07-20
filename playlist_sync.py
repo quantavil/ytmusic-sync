@@ -331,24 +331,6 @@ def get_lis_elements(items, target_video_ids):
     return lis_set_ids
 
 
-def get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set):
-    count = 0
-    for idx in range(curr_idx):
-        if current_state[idx]["videoId"] in new_video_ids_set:
-            count += 1
-    return count
-
-
-def get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=False):
-    non_deleted_count = 0
-    for idx, item in enumerate(current_state):
-        if non_deleted_count == target_idx:
-            return idx
-        if item["videoId"] in new_video_ids_set:
-            non_deleted_count += 1
-    return len(current_state) - 1 if is_move else len(current_state)
-
-
 def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_title, target_description, existing_title=None, existing_description=None, data_dir="data", track_names=None):
     if track_names is None:
         track_names = {}
@@ -381,27 +363,41 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
     # The Longest Increasing Subsequence (LIS) of the kept tracks (in target order)
     # never needs to move; every other kept track is repositioned at most once.
     lis_set_ids = get_lis_elements(remaining_current, new_video_ids)
+    # The single kept copy per videoId (first occurrence). Any other playlist entry
+    # (duplicate copies included) is slated for deletion in phase C.
+    kept_set_ids = {item["setVideoId"] for item in remaining_current}
 
     # B. Single left-to-right pass over the target order: insert missing tracks,
-    # reposition out-of-place kept tracks, and leave LIS-anchored tracks untouched.
+    # reposition out-of-place kept tracks, and leave correctly-ordered tracks untouched.
     #
-    # This is deliberately ONE pass. A previous version pre-sorted the kept tracks in
-    # a separate pass BEFORE inserting the new tracks; the inserts then shifted many of
-    # those just-sorted tracks back out of place, forcing a second move each (~50 quota
-    # units wasted per redundant move). Doing content + ordering together guarantees
-    # every track is moved at most once, which is the minimum for a given LIS.
+    # Placement invariant: prev_pos is the index (in current_state) of the last track
+    # settled into its final relative order. Each target track is placed immediately
+    # after it. A kept track may stay put only if nothing between prev_pos and it is
+    # an LIS anchor — everything else in that gap is either pending deletion or a
+    # not-yet-processed kept track that will be moved behind us later.
+    #
+    # Do NOT place tracks by counting the non-deleted items currently before a slot:
+    # that count includes out-of-place tracks that haven't been moved yet, which
+    # lands tracks one-or-more slots early and silently corrupts the final order
+    # (e.g. current E D A B C -> target A B C D E yielded A B D C E).
+    #
+    # This is ONE pass on purpose: an older two-pass version (pre-sort kept tracks,
+    # then insert) moved many tracks twice, wasting ~50 quota units per redundant
+    # move. This pass performs exactly (kept - LIS) moves — the provable minimum.
     print(f"Synchronizing playlist content and order (Target tracks: {len(new_video_ids)})...")
+    inserted_set_ids = set()
+    prev_pos = -1
     for target_idx, vid in enumerate(new_video_ids):
-        # Find where this video currently sits in our in-memory playlist model
+        # Locate the kept copy of this video in our in-memory playlist model
         curr_idx = -1
         for idx, item in enumerate(current_state):
-            if item["videoId"] == vid:
+            if item["videoId"] == vid and item["setVideoId"] in kept_set_ids:
                 curr_idx = idx
                 break
 
         if curr_idx == -1:
-            # Video is not in the playlist yet -> Insert at the adjusted index
-            adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=False)
+            # Video is not in the playlist yet -> insert right after the settled chain
+            adjusted_idx = prev_pos + 1
             print(f"Inserting new track {get_track_label(vid)} at position {adjusted_idx}...")
 
             def insert_item():
@@ -422,47 +418,56 @@ def sync_playlist(youtube, playlist_id, current_tracks, new_video_ids, target_ti
             res = call(insert_item, error_msg=f"Insert video {vid} at position {adjusted_idx}", quota_cost=50)
             new_item_id = res["id"]
             current_state.insert(adjusted_idx, {"videoId": vid, "setVideoId": new_item_id})
+            inserted_set_ids.add(new_item_id)
+            prev_pos = adjusted_idx
             time.sleep(0.2)
             continue
 
-        # Already in the playlist.
-        item_id = current_state[curr_idx]["setVideoId"]
-
-        # LIS-anchored tracks are already in the correct relative order; leave them
-        # in place. They float to their correct absolute position for free as the
-        # tracks around them are inserted/moved.
-        if item_id in lis_set_ids:
+        # Already in the playlist. It may stay put iff it is ahead of the settled
+        # chain and no LIS anchor sits in between (LIS anchors never move, so
+        # anything that must end up after them has to be moved past them).
+        item = current_state[curr_idx]
+        item_id = item["setVideoId"]
+        if curr_idx > prev_pos and not any(
+            between["setVideoId"] in lis_set_ids
+            for between in current_state[prev_pos + 1:curr_idx]
+        ):
+            prev_pos = curr_idx
             continue
 
-        # Reposition only if not already at the correct position (accounting for
-        # tracks still pending deletion that occupy slots in current_state).
-        if get_non_deleted_count_before(current_state, curr_idx, new_video_ids_set) != target_idx:
-            adjusted_idx = get_adjusted_index(current_state, target_idx, new_video_ids_set, is_move=True)
-            print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
+        # Move it to directly after the settled chain. The API 'position' is the
+        # final 0-based index after the move, so when the track currently sits
+        # before the destination its removal shifts the chain left by one.
+        adjusted_idx = prev_pos + 1 if curr_idx > prev_pos else prev_pos
+        print(f"Repositioning track {get_track_label(vid)} (current pos: {curr_idx}, target pos: {adjusted_idx})...")
 
-            def update_item():
-                return youtube.playlistItems().update(
-                    part="snippet",
-                    body={
-                        "id": item_id,
-                        "snippet": {
-                            "playlistId": playlist_id,
-                            "resourceId": {
-                                "kind": "youtube#video",
-                                "videoId": vid
-                            },
-                            "position": adjusted_idx
-                        }
+        def update_item():
+            return youtube.playlistItems().update(
+                part="snippet",
+                body={
+                    "id": item_id,
+                    "snippet": {
+                        "playlistId": playlist_id,
+                        "resourceId": {
+                            "kind": "youtube#video",
+                            "videoId": vid
+                        },
+                        "position": adjusted_idx
                     }
-                ).execute()
+                }
+            ).execute()
 
-            call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
-            item = current_state.pop(curr_idx)
-            current_state.insert(adjusted_idx, item)
-            time.sleep(0.2)
+        call(update_item, error_msg=f"Move item {item_id} to position {adjusted_idx}", quota_cost=50)
+        current_state.pop(curr_idx)
+        current_state.insert(adjusted_idx, item)
+        prev_pos = adjusted_idx
+        time.sleep(0.2)
 
-    # C. Execute deletions last (Remove)
-    to_delete = [item for item in current_state if item["videoId"] not in new_video_ids_set]
+    # C. Execute deletions last (Remove). Everything that is neither the kept copy
+    # of a target track nor freshly inserted goes — including duplicate copies of
+    # kept tracks, which the old videoId-based check silently left in place.
+    keep_ids = kept_set_ids | inserted_set_ids
+    to_delete = [item for item in current_state if item["setVideoId"] not in keep_ids]
     if to_delete:
         print(f"Removing {len(to_delete)} old/duplicate tracks from YouTube Music playlist...")
         for idx, item in enumerate(to_delete):

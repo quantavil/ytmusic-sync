@@ -606,6 +606,132 @@ class TestSyncBot(unittest.TestCase):
         # Expect exactly 2 updates (one for H and one for A).
         self.assertEqual(youtube.playlistItems().update.call_count, 2)
 
+    @staticmethod
+    def _make_replay_youtube(playlist):
+        """Builds a mock youtube client whose insert/update/delete side effects
+        replay each API call against `playlist` (a list of videoIds), using the
+        real API semantics: 'position' is the final 0-based index after the op.
+        setVideoIds follow the convention 's_<videoId>'."""
+        youtube = MagicMock()
+
+        def do_insert(part, body):
+            pos = body["snippet"]["position"]
+            vid = body["snippet"]["resourceId"]["videoId"]
+            playlist.insert(pos, vid)
+            m = MagicMock()
+            m.execute.return_value = {"id": f"s_{vid}"}
+            return m
+
+        def do_update(part, body):
+            pos = body["snippet"]["position"]
+            vid = body["snippet"]["resourceId"]["videoId"]
+            playlist.remove(vid)
+            playlist.insert(pos, vid)
+            m = MagicMock()
+            m.execute.return_value = {}
+            return m
+
+        def do_delete(id):
+            playlist.remove(id[2:])  # strip 's_' prefix
+            m = MagicMock()
+            m.execute.return_value = {}
+            return m
+
+        youtube.playlistItems().insert.side_effect = do_insert
+        youtube.playlistItems().update.side_effect = do_update
+        youtube.playlistItems().delete.side_effect = do_delete
+        youtube.playlists().update.return_value = MagicMock()
+        return youtube
+
+    def _run_replay_sync(self, current_order, target_order):
+        playlist = list(current_order)
+        youtube = self._make_replay_youtube(playlist)
+        current_tracks = [{"videoId": v, "setVideoId": f"s_{v}"} for v in current_order]
+        sync_playlist(
+            youtube,
+            playlist_id="pl_123",
+            current_tracks=current_tracks,
+            new_video_ids=list(target_order),
+            target_title="T",
+            target_description="d",
+            existing_title="T",
+            existing_description="d"
+        )
+        return playlist, youtube
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_final_order_interleaved(self, mock_sleep, mock_call):
+        # Regression: out-of-place tracks stacked before the LIS anchors used to
+        # be placed by counting unmoved tracks, yielding A B D C E instead of
+        # A B C D E.
+        final, _ = self._run_replay_sync(["E", "D", "A", "B", "C"], ["A", "B", "C", "D", "E"])
+        self.assertEqual(final, ["A", "B", "C", "D", "E"])
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_final_order_randomized(self, mock_sleep, mock_call):
+        # Property test: for random reshuffles with inserts and deletes, the final
+        # replayed playlist must equal the target exactly, and the number of move
+        # operations must not exceed the theoretical minimum (kept - LIS).
+        import random
+        import bisect
+        rng = random.Random(42)
+        for trial in range(40):
+            n_current = rng.randint(0, 14)
+            current = [f"v{i}" for i in range(n_current)]
+            rng.shuffle(current)
+            kept = [v for v in current if rng.random() < 0.75]
+            new = [f"n{trial}_{i}" for i in range(rng.randint(0, 5))]
+            target = kept + new
+            rng.shuffle(target)
+            if not target:
+                continue
+
+            final, youtube = self._run_replay_sync(current, target)
+            self.assertEqual(final, target, f"trial {trial}: wrong final order")
+
+            # Optimality: moves == kept - LIS(kept positions in target order)
+            tpos = {v: i for i, v in enumerate(target)}
+            kept_seq = [tpos[v] for v in current if v in tpos]
+            tails = []
+            for x in kept_seq:
+                i = bisect.bisect_left(tails, x)
+                if i == len(tails):
+                    tails.append(x)
+                else:
+                    tails[i] = x
+            min_moves = len(kept_seq) - len(tails)
+            self.assertEqual(
+                youtube.playlistItems().update.call_count, min_moves,
+                f"trial {trial}: expected {min_moves} moves"
+            )
+
+    @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
+    @patch("playlist_sync.time.sleep", return_value=None)
+    def test_sync_playlist_removes_duplicate_copies(self, mock_sleep, mock_call):
+        # A kept track appearing twice in the playlist: the extra copy must be
+        # deleted (the old videoId-based deletion check left it in forever).
+        current_tracks = [
+            {"videoId": "A", "setVideoId": "s_A1"},
+            {"videoId": "B", "setVideoId": "s_B"},
+            {"videoId": "A", "setVideoId": "s_A2"}
+        ]
+        youtube = MagicMock()
+        youtube.playlists().update.return_value = MagicMock()
+        sync_playlist(
+            youtube,
+            playlist_id="pl_123",
+            current_tracks=current_tracks,
+            new_video_ids=["A", "B"],
+            target_title="T",
+            target_description="d",
+            existing_title="T",
+            existing_description="d"
+        )
+        youtube.playlistItems().delete.assert_called_once_with(id="s_A2")
+        youtube.playlistItems().update.assert_not_called()
+
     def test_youtube_client_call_quota_error(self):
         from youtube_client import call as youtube_call, QuotaExceededError
         from googleapiclient.errors import HttpError
