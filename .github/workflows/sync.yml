@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: ytmusic-sync
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -20,7 +20,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: '3.13'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -29,8 +29,8 @@ jobs:
         run: |
           uv pip install -r requirements.txt --system
 
-      - name: Cache resolved track data
-        uses: actions/cache@v4
+      - name: Restore resolved track cache
+        uses: actions/cache/restore@v4
         with:
           path: data
           key: ytmusic-sync-data-${{ github.run_id }}
@@ -38,8 +38,15 @@ jobs:
             ytmusic-sync-data-
 
       - name: Restore Google OAuth Token
+        env:
+          TOKEN_JSON: ${{ secrets.YT_OAUTH_TOKEN_JSON }}
         run: |
-          echo '${{ secrets.YT_OAUTH_TOKEN_JSON }}' > token.json
+          if [ -z "$TOKEN_JSON" ]; then
+            echo "::error::Secret YT_OAUTH_TOKEN_JSON is missing or empty"
+            exit 1
+          fi
+          echo "$TOKEN_JSON" > token.json
+          chmod 600 token.json
 
       - name: Run Sync (Global)
         run: |
@@ -48,3 +55,10 @@ jobs:
       - name: Run Sync (India)
         run: |
           python sync.py --country in
+
+      - name: Save resolved track cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: ytmusic-sync-data-${{ github.run_id }}
