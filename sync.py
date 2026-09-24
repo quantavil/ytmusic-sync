@@ -100,20 +100,15 @@ def main():
         if args.force:
             print("Force flag active. Proceeding with sync regardless of cache date comparison.")
         
-        # 2. Authenticate: unauthenticated YTMusic for search, official OAuth for writes
+        # 2. Authenticate: unauthenticated YTMusic for search
         print("Initializing unauthenticated YouTube Music client for searches...")
         yt_search = YTMusic()
-        
-        print("Loading official YouTube Data API client...")
-        from youtube_client import get_youtube_client
-        youtube = get_youtube_client(token_path=args.auth)
             
         # 3. Load cache and enrich tracks with YouTube Music IDs
         cache_by_id, cache_by_name = load_ytmusic_cache(args.data_dir)
         print(f"Loaded cache from existing JSONs: {len(cache_by_id)} unique IDs, {len(cache_by_name)} name pairs.")
         
         tracks, resolved_count, cached_count, failed_count = resolve_track_ids(yt_search, tracks, cache_by_id, cache_by_name)
-        resolved_any = (resolved_count > 0)
         
         # Deduplicate video IDs while preserving ranking order to prevent YTM API failure
         seen = set()
@@ -152,6 +147,10 @@ def main():
             return
             
         if not partial_failure:
+            print("Loading official YouTube Data API client...")
+            from youtube_client import get_youtube_client
+            youtube = get_youtube_client(token_path=args.auth)
+
             # 4. Find or Create Playlist
             target_title = f"Spotify Weekly {country_name} Top 200"
             target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
@@ -189,9 +188,10 @@ def main():
         except Exception as q_err:
             print(f"⚠️ Warning: Could not retrieve API quota usage: {q_err}")
 
-        # Save cache if we resolved any new tracks but did not complete the sync.
+        # Save cache if we resolved any tracks but did not complete the sync.
         # We must mark it as partial because the sync did not complete successfully.
-        if chart and resolved_any and not args.dry_run and not sync_success:
+        has_resolved = bool(chart and any(t.get("ytMusicId") for t in chart.get("tracks", [])))
+        if chart and has_resolved and not args.dry_run and not sync_success:
             try:
                 save_cache_file(out_file, chart, week_date, partial=True)
             except Exception as save_err:

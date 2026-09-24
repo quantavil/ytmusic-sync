@@ -11,7 +11,7 @@ from playlist_sync import (
     resolve_track_ids,
     sync_playlist
 )
-from scraper import parse_kworb_html
+from scraper import parse_kworb_html, extract_week_date
 
 def make_mock_html(rows_html, headers=None, date="2026-07-01"):
     if headers is None:
@@ -73,6 +73,14 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(clean_title("Blinding Lights"), "blinding lights")
         self.assertEqual(clean_title(""), "")
         self.assertEqual(clean_title(None), "")
+        # Multi-hyphen title preservation (does not collapse to artist)
+        self.assertEqual(clean_title("Oasis - Wonderwall - Remastered"), "oasis wonderwall")
+        # Multiple bracket groups
+        self.assertEqual(clean_title("Song (Tokyo) [Official Music Video]"), "song tokyo")
+        # Collaborators in Kworb format (w/ ...) and - w/ / - with
+        self.assertEqual(clean_title("Fortnight (w/ Post Malone)"), "fortnight")
+        self.assertEqual(clean_title("Fortnight - w/ Post Malone"), "fortnight")
+        self.assertEqual(clean_title("Fortnight - with Post Malone"), "fortnight")
 
     def test_title_matches(self):
         # Exact match
@@ -104,6 +112,10 @@ class TestSyncBot(unittest.TestCase):
         self.assertFalse(title_matches("Espresso", {"title": "Espresso (Cover)"}))
         self.assertFalse(title_matches("Espresso", {"title": "Espresso (Karaoke)"}))
         
+        # Word boundary on live/cover/remix so artist/song names aren't falsely tagged
+        self.assertTrue(title_matches("Hurt", {"title": "Oliver Tree - Hurt"}))
+        self.assertFalse(title_matches("Recovery", {"title": "Recovery (Cover)"}))
+        
         # Matching versions
         self.assertTrue(title_matches("Espresso (Remix)", {"title": "Espresso (Remix)"}))
         self.assertTrue(title_matches("Espresso - Remix", {"title": "Espresso (rmx)"}))
@@ -128,6 +140,10 @@ class TestSyncBot(unittest.TestCase):
         self.assertFalse(artist_matches("Ana", {"artists": [{"name": "Anastasia"}]}))
         self.assertFalse(artist_matches("War", {"artists": [{"name": "Warpaint"}]}))
         self.assertFalse(artist_matches("Ari", {"artists": [{"name": "Arijit Singh"}]}))
+
+        # Single-letter hyphenated artist prefixes should not false-match unrelated names
+        self.assertFalse(artist_matches("T-Pain", {"artists": [{"name": "T-Series"}]}))
+        self.assertFalse(artist_matches("Jay-Z", {"artists": [{"name": "Jay Sean"}]}))
 
         # Rejecting tribute/cover/karaoke acts
         self.assertFalse(artist_matches("Taylor Swift", {"artists": [{"name": "Taylor Swift Tribute Band"}]}))
@@ -319,6 +335,22 @@ class TestSyncBot(unittest.TestCase):
         parsed = parse_kworb_html(mock_html, "global")
         self.assertEqual(len(parsed["tracks"]), 1)
 
+    def test_extract_week_date_formats(self):
+        from bs4 import BeautifulSoup
+        def parse_date(date_str):
+            soup = BeautifulSoup(f"<html><title>Spotify Chart - {date_str}</title></html>", "html.parser")
+            return extract_week_date(soup)
+
+        # Standard ISO YYYY-MM-DD
+        self.assertEqual(parse_date("2026-07-01"), "2026-07-01")
+        # Single-digit month and day YYYY-M-D
+        self.assertEqual(parse_date("2026-9-7"), "2026-09-07")
+        # European / slash format DD/MM/YYYY
+        self.assertEqual(parse_date("01/07/2026"), "2026-07-01")
+        self.assertEqual(parse_date("1/7/2026"), "2026-07-01")
+        # Dot separated format DD.MM.YYYY
+        self.assertEqual(parse_date("15.08.2026"), "2026-08-15")
+
     @patch("playlist_sync.call", side_effect=lambda func, *args, **kwargs: func())
     def test_find_or_create_playlist_existing(self, mock_call):
         youtube = MagicMock()
@@ -426,6 +458,7 @@ class TestSyncBot(unittest.TestCase):
         self.assertEqual(resolved_count, 1)
         self.assertEqual(cached_count, 1)
         self.assertEqual(failed_count, 0)
+        self.assertIn("dua lipa|||levitating", cache_by_name)
         # Songs search matched, so only songs filter was called
         yt.search.assert_called_once_with("The Weeknd Blinding Lights", filter="songs")
 
@@ -746,6 +779,31 @@ class TestSyncBot(unittest.TestCase):
             
         with self.assertRaises(QuotaExceededError):
             youtube_call(failing_func, attempts=1)
+
+    def test_youtube_client_error_classification(self):
+        from youtube_client import _classify_http_error, call as youtube_call, QuotaExceededError
+        from googleapiclient.errors import HttpError
+        import httplib2
+
+        # 1. rateLimitExceeded should be transient (retryable with backoff)
+        resp_403 = httplib2.Response({"status": 403})
+        rate_limit_content = b'{"error": {"errors": [{"reason": "rateLimitExceeded"}], "message": "Rate Limit Exceeded"}}'
+        self.assertEqual(_classify_http_error(HttpError(resp_403, rate_limit_content)), "transient")
+
+        # 2. Space-separated quota message in error_details / message
+        quota_content = b'{"error": {"message": "The request cannot be completed because you have exceeded your quota."}}'
+        err = HttpError(resp_403, quota_content)
+        self.assertEqual(_classify_http_error(err), "quota")
+        with self.assertRaises(QuotaExceededError):
+            youtube_call(MagicMock(side_effect=err), attempts=1)
+
+        # 3. Cloud Gateway 403 quota error
+        gateway_content = b'Quota exceeded for quota metric ...'
+        self.assertEqual(_classify_http_error(HttpError(resp_403, gateway_content)), "quota")
+
+        # 4. Standard 404 / 400 fatal errors
+        resp_404 = httplib2.Response({"status": 404})
+        self.assertEqual(_classify_http_error(HttpError(resp_404, b"Not Found")), "fatal")
 
     def test_parse_kworb_html_multiple_artists(self):
         headers = ["Pos", "P+", "Artist and Title", "Wks", "Pk", "(x?)", "Streams"]

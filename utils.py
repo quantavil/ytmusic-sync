@@ -1,8 +1,6 @@
-import sys
 import re
 import time
 import unicodedata
-from pathlib import Path
 from rapidfuzz import fuzz
 
 # Supported countries (Global and India only)
@@ -21,8 +19,7 @@ def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=
             return func()
         except Exception as e:
             last_exception = e
-            is_retryable = any(isinstance(e, t) for t in retryable_exceptions)
-            if not is_retryable:
+            if not isinstance(e, retryable_exceptions):
                 raise
             if attempt < attempts - 1:
                 wait_time = delay * (attempt + 1) if linear_backoff else current_delay
@@ -33,12 +30,8 @@ def retry_operation(func, attempts=3, delay=2, backoff_factor=1, linear_backoff=
             else:
                 print(f"❌ Error: {error_msg} failed after {attempts} attempts: {e}")
                 if fatal:
-                    if last_exception:
-                        raise last_exception
-                    else:
-                        raise RuntimeError(f"{error_msg} failed after {attempts} attempts")
-                else:
-                    return None
+                    raise last_exception
+                return None
 
 def clean_string(s):
     if not s:
@@ -52,6 +45,7 @@ def clean_string(s):
         if cat.startswith(('L', 'N')) or c.isspace():
             cleaned.append(c)
         # Keep spacing/nonspacing marks (M) but discard standard diacritical marks (U+0300 - U+036F)
+        # Preserves Indic script matras (India chart) while stripping Western diacritics
         elif cat.startswith('M'):
             if 0x0300 <= ord(c) <= 0x036F:
                 continue
@@ -59,35 +53,47 @@ def clean_string(s):
     res = "".join(cleaned).lower()
     return " ".join(res.split())
 
+# Precompiled regexes for title normalization
+_KEYWORDS = (
+    r"remaster|remastered|mix|edit|version|ver|explicit|clean|cover|"
+    r"bonus track|audio|video|music\s+video|lyric|lyrics|"
+    r"official|movie|ost|soundtrack|unplugged|acoustic|lofi|reprise|"
+    r"single|album|radio|live"
+)
+_FROM_PATTERN = r"from\s+(?:[\"'\u201c\u201d\u2018\u2019].+?[\"'\u201c\u201d\u2018\u2019]|(?:the\s+)?(?:movie|soundtrack|ost|motion\s+picture)\b.*)"
+_PATTERN_IN_BRACKETS = r"(?:" + _KEYWORDS + r")\b|" + _FROM_PATTERN
+
+_RE_FEAT_BRACKETS = re.compile(r"\s*[([{-]\s*(?:feat\.?|featuring|ft\.?|with|w/|prod\.?)(?:\s|\b).*?[)\]}]")
+_RE_FEAT_UNBRACKETED = re.compile(r"\b(?:feat\.?|featuring|ft\.?|prod\.?)(?:\s|\b).*")
+_RE_WITH_SUFFIX = re.compile(r"\s*[-/]\s*(?:with|w/)(?:\s|\b).*")
+_RE_BRACKETS_CLEAN = re.compile(r"\s*[([{]\s*(?:[^)\]}]*?\s+)?(?:" + _PATTERN_IN_BRACKETS + r")[^)\]}]*?[)\]}]")
+_RE_SUFFIX_CLEAN = re.compile(r"\s*[-/]\s*(?:[^-/]*?\s+)?(?:" + _KEYWORDS + r")\b.*")
+
 def clean_title(title):
     if not title:
         return ""
     
-    # If title contains pipe '|', take the first part (very common in video titles)
+    # If title contains pipe '|', take the first part (common in video titles)
     if "|" in title:
         title = title.split("|")[0].strip()
         
     title = title.lower()
-    # 1. Strip features in parentheses/brackets: (feat. ...), [feat. ...]
-    title = re.sub(r"\s*[([{-]\s*(?:feat|featuring|ft|with|prod)\b.*?[)\]}]", "", title, flags=re.IGNORECASE)
-    title = re.sub(r"\b(?:feat|featuring|ft|prod)\b.*", "", title, flags=re.IGNORECASE)
+    # 1. Strip features in parentheses/brackets: (feat. ...), [w/ ...]
+    title = _RE_FEAT_BRACKETS.sub("", title)
+    title = _RE_FEAT_UNBRACKETED.sub("", title)
+    title = _RE_WITH_SUFFIX.sub("", title)
     
-    # 2. Strip remaster / version / edit in parentheses/brackets
-    keywords = (
-        r"remaster|remastered|mix|edit|version|ver|explicit|clean|cover|"
-        r"bonus track|audio|video|music\s+video|lyric|lyrics|"
-        r"official|movie|ost|soundtrack|unplugged|acoustic|lofi|reprise"
-    )
-    from_pattern = r"from\s+(?:[\"'\u201c\u201d\u2018\u2019].+?[\"'\u201c\u201d\u2018\u2019]|(?:the\s+)?(?:movie|soundtrack|ost|motion\s+picture)\b.*)"
+    # 2. Strip remaster / version / edit in parentheses/brackets without crossing bracket boundaries
+    title = _RE_BRACKETS_CLEAN.sub("", title)
     
-    # Combined pattern for parentheses/brackets (includes from_pattern, doesn't force \b at the end)
-    pattern_in_brackets = r"(?:" + keywords + r")\b|" + from_pattern
-    title = re.sub(r"\s*[([{]\s*(?:.*?\s+)?(?:" + pattern_in_brackets + r").*?[)\]}]", "", title, flags=re.IGNORECASE)
-    
-    # 3. Strip hyphenated/slashed suffixes
-    title = re.sub(r"\s*[-|/]\s*(?:.*?\s+)?(?:" + keywords + r"|single|album|radio|live)\b.*", "", title, flags=re.IGNORECASE)
+    # 3. Strip hyphenated/slashed suffixes without crossing delimiter boundaries
+    title = _RE_SUFFIX_CLEAN.sub("", title)
     
     return clean_string(title)
+
+_VERSION_KEYWORDS = ["acoustic", "instrumental", "live", "cover", "tribute", "karaoke"]
+_RE_REMIX = re.compile(r"\b(remix|rmx)\b")
+_RE_VERSION_TAGS = {kw: re.compile(rf"\b{kw}\b") for kw in _VERSION_KEYWORDS}
 
 def title_matches(target_title, result, threshold=85):
     """
@@ -103,22 +109,22 @@ def title_matches(target_title, result, threshold=85):
     res_lower = res_title.lower()
     
     # Check for version mismatches (e.g. remix, acoustic, instrumental, live, cover, tribute, karaoke)
-    # Target and result must align on whether these tags are present.
-    # Note: 'rmx' is treated as synonymous with 'remix'
-    has_target_remix = "remix" in target_lower or "rmx" in target_lower
-    has_res_remix = "remix" in res_lower or "rmx" in res_lower
+    # Target and result must align on whether these tags are present using word boundaries.
+    has_target_remix = bool(_RE_REMIX.search(target_lower))
+    has_res_remix = bool(_RE_REMIX.search(res_lower))
     if has_target_remix != has_res_remix:
         return False
         
-    version_keywords = ["acoustic", "instrumental", "live", "cover", "tribute", "karaoke"]
-    for kw in version_keywords:
-        if (kw in target_lower) != (kw in res_lower):
+    for kw, pattern in _RE_VERSION_TAGS.items():
+        if bool(pattern.search(target_lower)) != bool(pattern.search(res_lower)):
             return False
             
     clean_target = clean_title(target_title)
     clean_result = clean_title(res_title)
     ratio = fuzz.WRatio(clean_target, clean_result)
     return ratio >= threshold
+
+_RE_ARTIST_TRIBUTE = re.compile(r"\b(tribute|cover|karaoke)\b")
 
 def artist_matches(target_artist, result, threshold=85):
     """
@@ -129,18 +135,32 @@ def artist_matches(target_artist, result, threshold=85):
         return True
     res_artists = [a.get("name", "") for a in result.get("artists", [])]
     clean_target = clean_string(target_artist)
+    target_lower = target_artist.lower()
     
     # Avoid matching tribute/cover/karaoke acts if the target artist doesn't explicitly contain them
-    target_lower = target_artist.lower()
-    for ra in res_artists:
-        ra_lower = ra.lower()
-        for kw in ["tribute", "cover", "karaoke"]:
-            if kw in ra_lower and kw not in target_lower:
-                return False
+    target_has_tribute = bool(_RE_ARTIST_TRIBUTE.search(target_lower))
+    if not target_has_tribute:
+        # Filter out result acts that are tribute/cover acts
+        res_artists = [ra for ra in res_artists if not _RE_ARTIST_TRIBUTE.search(ra.lower())]
+        if not res_artists:
+            return False
                 
-    # Split duos/collabs to check components
-    components = [clean_string(c) for c in re.split(r"[-–—,&]|\band\b", target_artist)]
-    components = [c for c in components if c]
+    # Split duos/collabs to check components.
+    # 1. Split on explicit collaboration conjunctions (&, ,, and)
+    primary_parts = [p.strip() for p in re.split(r"[,&]|\band\b", target_artist) if p.strip()]
+    
+    components = []
+    for part in primary_parts:
+        components.append(clean_string(part))
+        # Check for duo hyphenation (e.g. Sachet-Parampara, Vishal-Shekhar).
+        # Only split if all parts are distinct names (len >= 3) to prevent
+        # single-letter / prefix hyphenated names (Jay-Z, T-Pain) from false-matching.
+        hyphen_parts = [hp.strip() for hp in re.split(r"[-–—]", part) if hp.strip()]
+        if len(hyphen_parts) > 1 and all(len(hp) >= 3 for hp in hyphen_parts):
+            for hp in hyphen_parts:
+                cleaned_hp = clean_string(hp)
+                if len(cleaned_hp) > 1:
+                    components.append(cleaned_hp)
     
     for ra in res_artists:
         clean_ra = clean_string(ra)
@@ -155,5 +175,6 @@ def artist_matches(target_artist, result, threshold=85):
 def parse_num(raw):
     raw_clean = re.sub(r"[^\d]", "", raw)
     return int(raw_clean) if raw_clean else 0
+
 
 

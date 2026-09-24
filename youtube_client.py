@@ -11,15 +11,15 @@ Handles:
       * 429 / 5xx / network errors             -> retry with backoff
       * anything else                          -> raise immediately
 """
-import sys
-import time
-import requests
+import os
+import http.client
+import httplib2
 from pathlib import Path
 from utils import retry_operation
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from google.auth.exceptions import RefreshError
+from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -47,33 +47,68 @@ def get_youtube_client(token_path=None):
     except Exception as e:
         raise AuthError(f"Failed to load {token_path}: {e}")
 
-    if creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            # access_token was refreshed; refresh_token itself is unchanged
-            # in almost all cases, but persist anyway in case Google rotated it.
-            token_path.write_text(creds.to_json(), encoding="utf-8")
-        except Exception as e:
-            raise AuthError(
-                f"Failed to refresh credentials: {e}. "
-                f"The refresh token may have been revoked — re-run auth_google.py."
-            )
-    elif not creds.valid:
-        raise AuthError("token.json has no valid/refreshable credentials — re-run auth_google.py.")
+    if not creds.valid:
+        if creds.refresh_token:
+            try:
+                creds.refresh(Request())
+                token_path.write_text(creds.to_json(), encoding="utf-8")
+                try:
+                    os.chmod(token_path, 0o600)
+                except OSError:
+                    pass
+            except Exception as e:
+                raise AuthError(
+                    f"Failed to refresh credentials: {e}. "
+                    f"The refresh token may have been revoked — re-run auth_google.py."
+                )
+        else:
+            raise AuthError("token.json has no valid/refreshable credentials — re-run auth_google.py.")
 
     return build("youtube", "v3", credentials=creds, static_discovery=True)
 
 
 def _classify_http_error(e: HttpError):
-    status = e.resp.status if getattr(e, "resp", None) else None
+    status = getattr(e, "status_code", None) or (e.resp.status if getattr(e, "resp", None) else None)
+    try:
+        status = int(status) if status is not None else None
+    except (ValueError, TypeError):
+        status = None
     reason_str = str(e).lower()
 
-    if status == 403 and ("quotaexceeded" in reason_str or "dailylimitexceeded" in reason_str or "ratelimitexceeded" in reason_str):
+    # Extract structured error reasons from API response if present
+    reasons = set()
+    if isinstance(getattr(e, "error_details", None), list):
+        for d in e.error_details:
+            if isinstance(d, dict) and "reason" in d:
+                reasons.add(str(d["reason"]).lower())
+
+    is_quota = (
+        "quotaexceeded" in reasons
+        or "dailylimitexceeded" in reasons
+        or any(phr in reason_str for phr in [
+            "quotaexceeded", "quota exceeded", "exceeded your quota",
+            "dailylimitexceeded", "daily limit exceeded"
+        ])
+    )
+    if status == 403 and is_quota:
         return "quota"
+
     if status in (401,) or "invalid_grant" in reason_str or "unauthorized" in reason_str:
         return "auth"
-    if status in (409, 429, 500, 502, 503, 504) or "service_unavailable" in reason_str or "the operation was aborted" in reason_str:
+
+    is_rate_limit = (
+        "ratelimitexceeded" in reasons
+        or "userratelimitexceeded" in reasons
+        or any(phr in reason_str for phr in ["ratelimitexceeded", "rate limit exceeded", "userratelimitexceeded"])
+    )
+    if (
+        status in (409, 429, 500, 502, 503, 504)
+        or is_rate_limit
+        or "service_unavailable" in reason_str
+        or "the operation was aborted" in reason_str
+    ):
         return "transient"
+
     return "fatal"
 
 
@@ -120,7 +155,7 @@ def call(func, attempts=3, delay=2, error_msg="YouTube API call", quota_cost=0):
             raise
         except RefreshError as e:
             raise AuthError(f"{error_msg}: credentials refresh failed: {e}. Re-run auth_google.py.")
-        except (OSError, requests.exceptions.RequestException) as e:
+        except (OSError, httplib2.HttpLib2Error, http.client.HTTPException, TransportError) as e:
             raise TransientAPIError(str(e)) from e
 
     try:

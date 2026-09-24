@@ -191,6 +191,8 @@ def _search_and_match(yt, query, title, artist, filter_type):
 
     candidate_result, candidate_idx = None, -1
     for r_idx, res in enumerate(results[:3]):
+        if not res.get("videoId"):
+            continue
         if title_matches(title, res):
             if artist_matches(artist, res):
                 return res, r_idx, True
@@ -229,6 +231,10 @@ def resolve_track_ids(yt, tracks, cache_by_id, cache_by_name):
             t["ytMusicId"] = yt_id
             if spotify_id and spotify_id not in cache_by_id:
                 cache_by_id[spotify_id] = yt_id
+            if artist and title:
+                key = f"{clean_string(artist)}|||{clean_string(title)}"
+                if key not in cache_by_name:
+                    cache_by_name[key] = yt_id
             cached_count += 1
             continue
 

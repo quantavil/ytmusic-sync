@@ -1,6 +1,7 @@
 #!/bin/bash
 # Enable absolute path tracking
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
+trap "echo -e '\nAborted by user.'; exit 130" INT
 
 echo "===================================================="
 echo "      YouTube Music Playlist Synchronization        "
@@ -11,6 +12,11 @@ echo "🚀 Running Sync for GLOBAL chart..."
 uv run python3 sync.py --country global "$@"
 GLOBAL_STATUS=$?
 
+if [ $GLOBAL_STATUS -eq 130 ]; then
+    echo "Aborted by user."
+    exit 130
+fi
+
 echo
 echo "----------------------------------------------------"
 echo
@@ -18,6 +24,11 @@ echo
 echo "🚀 Running Sync for INDIA chart..."
 uv run python3 sync.py --country in "$@"
 INDIA_STATUS=$?
+
+if [ $INDIA_STATUS -eq 130 ]; then
+    echo "Aborted by user."
+    exit 130
+fi
 
 echo
 echo "===================================================="

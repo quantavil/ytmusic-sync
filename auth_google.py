@@ -66,7 +66,13 @@ def main():
         print(f"\n❌ Error during OAuth flow: {e}")
         sys.exit(1)
 
-    Path(TOKEN_FILE).write_text(creds.to_json(), encoding="utf-8")
+    token_path = Path(TOKEN_FILE)
+    token_path.write_text(creds.to_json(), encoding="utf-8")
+    try:
+        import os
+        os.chmod(token_path, 0o600)
+    except OSError:
+        pass
     print(f"\n🎉 Success! Saved credentials to {TOKEN_FILE}.")
     print("Keep this file secret — treat it like a password.")
     print("For GitHub Actions, copy its contents into a repo secret named YT_OAUTH_TOKEN_JSON.")
@@ -75,7 +81,12 @@ def main():
     print("\nVerifying token can be refreshed...")
     try:
         creds.refresh(Request())
-        print("✅ Token refresh verified. You're set up.")
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        try:
+            os.chmod(token_path, 0o600)
+        except OSError:
+            pass
+        print("✅ Token refresh verified and updated. You're set up.")
     except Exception as e:
         print(f"⚠️ Warning: Verification token refresh failed: {e}")
         print("The credentials file was saved successfully, but we could not verify refreshing due to a network or API issue.")

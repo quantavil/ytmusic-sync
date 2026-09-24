@@ -42,6 +42,7 @@ def main():
         sys.exit(1)
 
     playlist_id = None
+    failed = False
     try:
         # Step 1: Create the temporary playlist
         print(f"➕ Creating temporary playlist: '{TEMP_TITLE}'...")
@@ -134,8 +135,10 @@ def main():
         print("✅ SUCCESS: Complex Add, Delete, and Reorder (LIS) operations verified successfully on YouTube!")
 
     except AssertionError as e:
+        failed = True
         print(f"❌ Assertion Failure during verification: {e}")
     except Exception as e:
+        failed = True
         print(f"❌ Unexpected Error: {e}")
     finally:
         # Step 6: Cleanup - delete the temporary playlist with robust retries
@@ -157,6 +160,8 @@ def main():
                         time.sleep(3.0)
                     else:
                         print("❌ Could not delete temporary playlist after max attempts. Please delete manually.")
+        if failed:
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

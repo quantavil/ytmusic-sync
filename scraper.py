@@ -14,14 +14,37 @@ def extract_week_date(soup):
         sources.append(soup.title.get_text())
     
     for s in sources:
-        m = re.search(r"(\d{4})[-/](\d{2})[-/](\d{2})", s)
+        # Match YYYY-MM-DD, YYYY/M/D, or YYYY.M.D
+        m = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
         if m:
-            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            return f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
+        
+        # Match DD/MM/YYYY or DD.MM.YYYY
+        m_dmy = re.search(r"\b(\d{1,2})[/.–-](\d{1,2})[/.–-](\d{4})\b", s)
+        if m_dmy:
+            day, month, year = int(m_dmy.group(1)), int(m_dmy.group(2)), m_dmy.group(3)
+            if 1 <= month <= 12 and 1 <= day <= 31:
+                return f"{year}-{str(month).zfill(2)}-{str(day).zfill(2)}"
+        
+        # Match Month Day, Year (e.g. September 17, 2026)
         m2 = re.search(r"([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})", s)
         if m2:
             try:
-                date_str = f"{m2.group(1)} {m2.group(2)} {m2.group(3)}".replace(",", "")
+                date_str = f"{m2.group(1)} {m2.group(2)} {m2.group(3)}"
                 for fmt in ("%B %d %Y", "%b %d %Y"):
+                    try:
+                        return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+
+        # Match Day Month Year (e.g. 17 September 2026)
+        m3 = re.search(r"(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})", s)
+        if m3:
+            try:
+                date_str = f"{m3.group(1)} {m3.group(2)} {m3.group(3)}"
+                for fmt in ("%d %B %Y", "%d %b %Y"):
                     try:
                         return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
                     except ValueError:
@@ -55,7 +78,11 @@ def fetch_kworb_html(country_code):
 def parse_kworb_html(html_content, country_code):
     country_config = COUNTRIES[country_code]
     soup = BeautifulSoup(html_content, "html.parser")
-    table = soup.find("table")
+    table = (
+        soup.find("table", id="spotifyweekly")
+        or soup.find("table", class_="sortable")
+        or soup.find("table")
+    )
     if not table:
         raise ValueError(f"No table found in HTML for {country_code}")
         
@@ -125,9 +152,8 @@ def parse_kworb_html(html_content, country_code):
             print(f"⚠️ Warning: Skipping row {r_idx} because it has only {len(cells)} columns (expected {required_cols})")
             continue
             
-        try:
-            rank = int(cells[col_pos].get_text(strip=True))
-        except ValueError:
+        rank = parse_num(cells[col_pos].get_text(strip=True))
+        if rank <= 0:
             print(f"⚠️ Warning: Skipping row {r_idx} due to invalid rank format: '{cells[col_pos].get_text(strip=True)}'")
             continue
             
@@ -141,8 +167,6 @@ def parse_kworb_html(html_content, country_code):
         title = ""
         spotify_id = ""
         
-        # Note: Featured/collaborator artists (e.g. "(w/ Ejae...)") are intentionally omitted
-        # from the scraped artist field as YTM search handles primary artist + title best.
         track_text = track_cell.get_text(" ", strip=True)
         if " - " in track_text:
             artist, title = track_text.split(" - ", 1)
@@ -153,18 +177,14 @@ def parse_kworb_html(html_content, country_code):
             title = track_text.strip()
 
         # Find the Spotify track link specifically by scanning href for "track/"
-        href = ""
         for a in a_tags:
             a_href = a.get("href", "")
             if "track/" in a_href:
-                href = a_href
                 title = a.get_text(strip=True)
+                match = re.search(r"track/([a-zA-Z0-9]+)\.html", a_href)
+                if match:
+                    spotify_id = match.group(1)
                 break
-
-        if href:
-            match = re.search(r"track/([a-zA-Z0-9]+)\.html", href)
-            if match:
-                spotify_id = match.group(1)
                 
         streams = parse_num(cells[col_streams].get_text(strip=True))
         peak = parse_num(cells[col_peak].get_text(strip=True))
