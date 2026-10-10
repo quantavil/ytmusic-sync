@@ -153,7 +153,12 @@ def main():
 
             # 4. Find or Create Playlist
             target_title = f"Spotify Weekly {country_name} Top 200"
-            target_description = f"Synced automatically from Spotify weekly streaming chart on {week_date} via Spotify sync bot."
+            tag_slug = country_name.replace(" ", "")
+            target_description = (
+                f"Spotify Weekly {country_name} Top 200 streaming chart (week of {week_date}). "
+                f"Automatically synchronized from Spotify charts via Kworb.\n\n"
+                f"#Spotify #Top200 #{tag_slug} #YouTubeMusic #MusicCharts #WeeklyCharts"
+            )
             
             playlist_id, current_tracks, existing_title, existing_description = find_or_create_playlist(youtube, target_title, target_description)
             

@@ -4,20 +4,24 @@
 [![Package Manager](https://img.shields.io/badge/managed%20by-uv-purple.svg)](https://github.com/astral-sh/uv)
 [![API](https://img.shields.io/badge/YouTube%20Data%20API-v3-red.svg)](https://developers.google.com/youtube/v3)
 [![CI](https://img.shields.io/badge/GitHub%20Actions-scheduled-green.svg)](https://github.com/quantavil/ytmusic-sync/actions)
+[![Spotify](https://img.shields.io/badge/Spotify-Charts-1ED760?logo=spotify&logoColor=white)](https://kworb.net/spotify/)
+[![YouTube Music](https://img.shields.io/badge/YouTube-Music-FF0000?logo=youtubemusic&logoColor=white)](https://music.youtube.com/)
 
-A lightweight, autonomous Python utility that syncs **Spotify Weekly Top 200 Charts** directly into YouTube Music playlists. It scrapes charts from Kworb, resolves tracks to YouTube Music IDs with local caching, and reconciles playlists using a quota-optimal single-pass algorithm.
+A lightweight, autonomous Python utility that automatically synchronizes **Spotify Weekly Top 200 Charts** directly into YouTube Music playlists. It scrapes charts from Kworb, resolves tracks to YouTube Music video IDs with local caching, and reconciles playlists using a quota-optimal single-pass LIS algorithm.
 
 ---
 
-## 📋 Synchronized Charts & Schedules
+## 🎧 Live YouTube Music Playlists
 
-| Chart | YouTube Music Playlist | Scheduled Run (07:30 UTC / 1:00 PM IST) | Workflow File |
+Click below to open and listen directly to the live synchronized playlists:
+
+| Chart | YouTube Music Playlist | Direct Streaming Link | Update Schedule (07:30 UTC / 1:00 PM IST) |
 | :--- | :--- | :--- | :--- |
-| **Global** | `Spotify Weekly Global Top 200` | **Saturday & Monday** | [`.github/workflows/sync-global.yml`](.github/workflows/sync-global.yml) |
-| **India** | `Spotify Weekly India Top 200` | **Sunday & Tuesday** | [`.github/workflows/sync-india.yml`](.github/workflows/sync-india.yml) |
+| 🌍 **Global** | **Spotify Weekly Global Top 200** | [▶️ **Listen on YouTube Music**](https://music.youtube.com/playlist?list=PLN7oNg7bR2bo) <br><sub>[Standard YouTube Link](https://www.youtube.com/playlist?list=PLN7oNg7bR2bo)</sub> | **Saturday & Monday** ([`sync-global.yml`](.github/workflows/sync-global.yml)) |
+| 🇮🇳 **India** | **Spotify Weekly India Top 200** | [▶️ **Listen on YouTube Music**](https://music.youtube.com/playlist?list=PLZKHuuLG3Vpo) <br><sub>[Standard YouTube Link](https://www.youtube.com/playlist?list=PLZKHuuLG3Vpo)</sub> | **Sunday & Tuesday** ([`sync-india.yml`](.github/workflows/sync-india.yml)) |
 
 > [!NOTE]
-> Schedules are isolated across days so each chart receives the full **10,000 daily YouTube Data API quota units** without contention.
+> Workflows run on alternating days to guarantee that each chart sync has dedicated access to the full **10,000 daily YouTube Data API quota units** without contention.
 
 ---
 
@@ -83,9 +87,15 @@ The YouTube Data API provides **10,000 units/day** (each track insert/move/delet
 
 ## 🤖 GitHub Actions Automation
 
-Automated runs run automatically via GitHub Actions runners:
+Automated runs execute via GitHub Actions:
 
 1. Copy the contents of your local `token.json`.
 2. In your repository, go to **Settings** > **Secrets and variables** > **Actions** > **New repository secret**.
 3. Create secret **`YT_OAUTH_TOKEN_JSON`** and paste the JSON contents.
 4. Each workflow (`sync-global.yml` and `sync-india.yml`) restores the token, resolves tracks, updates playlists, and caches metadata across runs.
+
+---
+
+## 🏷️ Tags & Topics
+
+`#spotify` `#youtube-music` `#ytmusic` `#spotify-charts` `#kworb` `#playlist-sync` `#music-sync` `#spotify-top-200` `#india-top-200` `#global-top-200` `#automation` `#github-actions` `#python`
