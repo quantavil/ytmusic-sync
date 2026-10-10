@@ -2,8 +2,8 @@ name: Sync Spotify Charts (Global)
 
 on:
   schedule:
-    # Run at 07:30 UTC (1:00 PM IST) on Saturday and Monday (Kworb chart drop + backup)
-    - cron: '30 7 * * 6,1'
+    # Run at 07:30 UTC (1:00 PM IST) on Saturday
+    - cron: '30 7 * * 6'
   workflow_dispatch: # Allows manual trigger
 
 concurrency:

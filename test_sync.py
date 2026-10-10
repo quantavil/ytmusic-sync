@@ -1028,5 +1028,88 @@ class TestSyncBot(unittest.TestCase):
         called_data = mock_json_dump.call_args[0][0]
         self.assertEqual(called_data["weekDate"], "2026-07-01-partial")
 
+    def test_parse_kworb_html_radio(self):
+        # Create 110 radio rows with Aud column and archive date link
+        rows = "".join(f"""
+        <tr>
+            <td>{i+1}</td>
+            <td>=</td>
+            <td>Artist {i+1} - Song {i+1}</td>
+            <td>50</td>
+            <td>1</td>
+            <td>(x2)</td>
+            <td>45.20</td>
+        </tr>
+        """ for i in range(110))
+
+        radio_html = f"""
+        <html>
+        <head><title>Billboard Radio</title></head>
+        <body>
+        <span class="pagetitle">Billboard Radio Songs Estimates | <a href="/radio/archives/20261009.html">«</a></span>
+        <table id="overallai" class="sortable">
+            <tr><th>Pos</th><th>P+</th><th>Artist and Title</th><th>Days</th><th>Pk</th><th>(x?)</th><th>Aud</th></tr>
+            {rows}
+        </table>
+        </body>
+        </html>
+        """
+        parsed = parse_kworb_html(radio_html, "radio")
+        self.assertEqual(parsed["weekDate"], "2026-10-09")
+        self.assertEqual(len(parsed["tracks"]), 100) # Capped at 100
+        self.assertEqual(parsed["tracks"][0]["artist"], "Artist 1")
+        self.assertEqual(parsed["tracks"][0]["title"], "Song 1")
+        self.assertEqual(parsed["tracks"][0]["spotifyId"], "")
+
+    def test_parse_kworb_html_apple_songs(self):
+        rows = "".join(f"""
+        <tr>
+            <td>{i+1}</td>
+            <td>=</td>
+            <td>Apple Artist {i+1} - Apple Track {i+1}</td>
+            <td>20</td>
+            <td>1</td>
+            <td>(x1)</td>
+            <td>9500</td>
+        </tr>
+        """ for i in range(55))
+
+        apple_html = f"""
+        <html>
+        <head><title>Worldwide Apple Music Song Chart - 2026/10/09</title></head>
+        <body>
+        <span class="pagetitle">Worldwide Apple Music Song Chart - 2026/10/09</span>
+        <table class="sortable">
+            <tr><th>Pos</th><th>P+</th><th>Artist and Title</th><th>Days</th><th>Pk</th><th>(x?)</th><th>Pts</th></tr>
+            {rows}
+        </table>
+        </body>
+        </html>
+        """
+        parsed = parse_kworb_html(apple_html, "apple_songs")
+        self.assertEqual(parsed["weekDate"], "2026-10-09")
+        self.assertEqual(len(parsed["tracks"]), 55)
+        self.assertEqual(parsed["tracks"][0]["artist"], "Apple Artist 1")
+        self.assertEqual(parsed["tracks"][0]["title"], "Apple Track 1")
+        self.assertEqual(parsed["tracks"][0]["spotifyId"], "")
+
+    def test_parse_kworb_html_us(self):
+        rows = """
+        <tr>
+            <td>1</td>
+            <td>0</td>
+            <td><a href="artist/us1.html">US Artist</a> - <a href="track/us_sp1.html">US Title</a></td>
+            <td>10</td>
+            <td>1</td>
+            <td>x</td>
+            <td>2,500,000</td>
+        </tr>
+        """
+        us_html = make_mock_html(rows, date="2026-10-08")
+        parsed = parse_kworb_html(us_html, "us")
+        self.assertEqual(parsed["weekDate"], "2026-10-08")
+        self.assertEqual(len(parsed["tracks"]), 1)
+        self.assertEqual(parsed["tracks"][0]["spotifyId"], "us_sp1")
+
 if __name__ == "__main__":
     unittest.main()

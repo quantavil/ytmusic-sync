@@ -1,14 +1,17 @@
 # Project: ytmusic-sync
 
 ## Overview
-A standalone Python utility that scrapes Spotify Weekly charts directly from Kworb (Global and India charts only), resolves track IDs using YouTube Music API, caches the metadata locally, and synchronizes them into public/private YouTube Music playlists.
+A standalone Python utility that scrapes music charts directly from Kworb (Spotify Weekly Global, India, US; Billboard Radio Top 100; and Worldwide Apple Music), resolves track IDs using YouTube Music API, caches the metadata locally, and synchronizes them into public/private YouTube Music playlists.
 
 ## Structure
 ytmusic-sync/
 ├── .github/
 │   └── workflows/
-│       ├── sync-global.yml   # Scheduled sync for Global chart (Sat, Mon)
-│       └── sync-india.yml    # Scheduled sync for India chart (Sun, Tue)
+│       ├── sync-global.yml   # Scheduled sync for Global chart (Sat)
+│       ├── sync-india.yml    # Scheduled sync for India chart (Sun)
+│       ├── sync-us.yml       # Scheduled sync for United States chart (Mon)
+│       ├── sync-radio.yml    # Scheduled sync for Billboard Radio Top 100 (Tue)
+│       └── sync-apple.yml    # Scheduled sync for Worldwide Apple Music (Wed)
 ├── data/              # Cached country charts and resolved ytMusicId entries
 ├── utils.py                  # Common constants and shared generic utilities
 ├── scraper.py                # Parsing and HTML scraping logic for Kworb weekly charts

@@ -1,0 +1,60 @@
+name: Sync Charts (Worldwide Apple Music)
+
+on:
+  schedule:
+    # Run at 07:30 UTC (1:00 PM IST) on Wednesday (dedicated quota day)
+    - cron: '30 7 * * 3'
+  workflow_dispatch: # Allows manual trigger
+
+concurrency:
+  group: ytmusic-sync-apple
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: |
+          uv pip install -r requirements.txt --system
+
+      - name: Restore resolved track cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: ytmusic-sync-data-${{ github.run_id }}
+          restore-keys: |
+            ytmusic-sync-data-
+
+      - name: Restore Google OAuth Token
+        env:
+          TOKEN_JSON: ${{ secrets.YT_OAUTH_TOKEN_JSON }}
+        run: |
+          if [ -z "$TOKEN_JSON" ]; then
+            echo "::error::Secret YT_OAUTH_TOKEN_JSON is missing or empty"
+            exit 1
+          fi
+          echo "$TOKEN_JSON" > token.json
+          chmod 600 token.json
+
+      - name: Run Sync (Apple Music)
+        run: |
+          python sync.py --country apple_songs
+
+      - name: Save resolved track cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: ytmusic-sync-data-${{ github.run_id }}

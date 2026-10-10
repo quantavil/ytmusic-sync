@@ -51,12 +51,21 @@ def extract_week_date(soup):
                         continue
             except Exception:
                 pass
+    archive_links = soup.find_all("a", href=re.compile(r"archives?/(\d{4})(\d{2})(\d{2})\.html"))
+    dates = []
+    for al in archive_links:
+        m = re.search(r"archives?/(\d{4})(\d{2})(\d{2})\.html", al["href"])
+        if m:
+            dates.append(f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
+    if dates:
+        return max(dates)
+
     raise ValueError("Failed to parse week date from Kworb page structure. Page layout might have changed.")
 
 def fetch_kworb_html(country_code):
     country_config = COUNTRIES[country_code]
-    url = f"{BASE_URL}/{country_config['slug']}.html"
-    print(f"⏳ Scraping Kworb Weekly Chart: {url} ...")
+    url = country_config.get("url") or f"{BASE_URL}/{country_config['slug']}.html"
+    print(f"⏳ Scraping Kworb Chart: {url} ...")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; MusicChartsDash/1.0)"}
     
     def fetch_url():
@@ -77,9 +86,11 @@ def fetch_kworb_html(country_code):
 
 def parse_kworb_html(html_content, country_code):
     country_config = COUNTRIES[country_code]
+    max_tracks = country_config.get("limit", 200)
     soup = BeautifulSoup(html_content, "html.parser")
     table = (
         soup.find("table", id="spotifyweekly")
+        or soup.find("table", id="overallai")
         or soup.find("table", class_="sortable")
         or soup.find("table")
     )
@@ -112,7 +123,7 @@ def parse_kworb_html(html_content, country_code):
             col_weeks = idx
         elif ("pk" in h_lower or "peak" in h_lower) and col_peak == -1:
             col_peak = idx
-        elif h_lower == "streams" and col_streams == -1:
+        elif any(k in h_lower for k in ("streams", "aud", "pts")) and col_streams == -1:
             col_streams = idx
             
     # Fallback to defaults if headers match fails
@@ -144,7 +155,7 @@ def parse_kworb_html(html_content, country_code):
     
     required_cols = max(col_pos, col_change, col_track, col_weeks, col_peak, col_streams) + 1
     for r_idx in range(1, len(rows)):
-        if len(tracks) >= 200:
+        if len(tracks) >= max_tracks:
             break
             
         cells = rows[r_idx].find_all("td")
@@ -181,7 +192,7 @@ def parse_kworb_html(html_content, country_code):
             a_href = a.get("href", "")
             if "track/" in a_href:
                 title = a.get_text(strip=True)
-                match = re.search(r"track/([a-zA-Z0-9]+)\.html", a_href)
+                match = re.search(r"track/([a-zA-Z0-9_-]+)\.html", a_href)
                 if match:
                     spotify_id = match.group(1)
                 break
@@ -202,10 +213,11 @@ def parse_kworb_html(html_content, country_code):
             "weeks": weeks
         })
         
+    min_expected = 50 if max_tracks <= 100 else 100
     if len(tracks) == 0:
         raise ValueError("Scraped 0 tracks from Kworb page. This indicates a parser structure or column layout change.")
-    elif len(tracks) < 100:
-        print(f"⚠️ Warning: Scraped only {len(tracks)} tracks (expected ~200). Some rows might have failed to parse.")
+    elif len(tracks) < min_expected:
+        print(f"⚠️ Warning: Scraped only {len(tracks)} tracks (expected ~{max_tracks}). Some rows might have failed to parse.")
         
     return {
         "country": country_code,

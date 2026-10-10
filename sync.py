@@ -22,7 +22,7 @@ def parse_args():
         type=str,
         default="global",
         choices=list(COUNTRIES.keys()),
-        help="Country chart to sync ('global' or 'in')."
+        help=f"Country or chart to sync ({', '.join(COUNTRIES.keys())})."
     )
     parser.add_argument(
         "--data-dir",
@@ -137,9 +137,11 @@ def main():
 
         if args.dry_run:
             print("\n--- DRY RUN ACTIVE ---")
+            chart_config = COUNTRIES[args.country]
+            target_title = chart_config.get("playlist_title", f"Spotify Weekly {country_name} Top 200")
             print(f"Would save updated data cache to {args.data_dir}/{args.country}.json")
             if not partial_failure:
-                print(f"Would sync to playlist: Spotify Weekly {country_name} Top 200")
+                print(f"Would sync to playlist: {target_title}")
                 print(f"Tracks to add (first 5): {new_video_ids[:5]}")
             else:
                 print("Would skip playlist synchronization due to partial resolution failure.")
@@ -152,13 +154,28 @@ def main():
             youtube = get_youtube_client(token_path=args.auth)
 
             # 4. Find or Create Playlist
-            target_title = f"Spotify Weekly {country_name} Top 200"
+            chart_config = COUNTRIES[args.country]
+            target_title = chart_config.get("playlist_title", f"Spotify Weekly {country_name} Top 200")
             tag_slug = country_name.replace(" ", "")
-            target_description = (
-                f"Spotify Weekly {country_name} Top 200 streaming chart (week of {week_date}). "
-                f"Automatically synchronized from Spotify charts via Kworb.\n\n"
-                f"#Spotify #Top200 #{tag_slug} #YouTubeMusic #MusicCharts #WeeklyCharts"
-            )
+            source_type = chart_config.get("source", "spotify")
+            if source_type == "radio":
+                target_description = (
+                    f"Billboard Radio Songs Top 100 chart (week of {week_date}). "
+                    f"Automatically synchronized from Billboard Radio estimates via Kworb.\n\n"
+                    f"#Billboard #Radio #Top100 #YouTubeMusic #MusicCharts"
+                )
+            elif source_type == "apple_songs":
+                target_description = (
+                    f"Worldwide Apple Music Top 200 song chart (week of {week_date}). "
+                    f"Automatically synchronized from Apple Music charts via Kworb.\n\n"
+                    f"#AppleMusic #Top200 #Worldwide #YouTubeMusic #MusicCharts"
+                )
+            else:
+                target_description = (
+                    f"Spotify Weekly {country_name} Top 200 streaming chart (week of {week_date}). "
+                    f"Automatically synchronized from Spotify charts via Kworb.\n\n"
+                    f"#Spotify #Top200 #{tag_slug} #YouTubeMusic #MusicCharts #WeeklyCharts"
+                )
             
             playlist_id, current_tracks, existing_title, existing_description = find_or_create_playlist(youtube, target_title, target_description)
             

@@ -8,35 +8,49 @@ echo "      YouTube Music Playlist Synchronization        "
 echo "===================================================="
 echo
 
-echo "🚀 Running Sync for GLOBAL chart..."
-uv run python3 sync.py --country global "$@"
-GLOBAL_STATUS=$?
+CHARTS=("global" "in" "us" "radio" "apple_songs")
 
-if [ $GLOBAL_STATUS -eq 130 ]; then
-    echo "Aborted by user."
-    exit 130
+# If first arg matches one of our charts, run only that chart
+TARGET_CHART=""
+PASSED_ARGS=()
+
+for arg in "$@"; do
+    if [[ " ${CHARTS[*]} " =~ " ${arg} " ]] && [ -z "$TARGET_CHART" ]; then
+        TARGET_CHART="$arg"
+    else
+        PASSED_ARGS+=("$arg")
+    fi
+done
+
+if [ -n "$TARGET_CHART" ]; then
+    RUN_CHARTS=("$TARGET_CHART")
+else
+    RUN_CHARTS=("${CHARTS[@]}")
 fi
 
-echo
-echo "----------------------------------------------------"
-echo
+FAILED_CHARTS=()
 
-echo "🚀 Running Sync for INDIA chart..."
-uv run python3 sync.py --country in "$@"
-INDIA_STATUS=$?
+for chart in "${RUN_CHARTS[@]}"; do
+    echo "🚀 Running Sync for ${chart^^} chart..."
+    uv run python3 sync.py --country "$chart" "${PASSED_ARGS[@]}"
+    STATUS=$?
+    if [ $STATUS -eq 130 ]; then
+        echo "Aborted by user."
+        exit 130
+    elif [ $STATUS -ne 0 ]; then
+        FAILED_CHARTS+=("$chart")
+    fi
+    echo
+    echo "----------------------------------------------------"
+    echo
+done
 
-if [ $INDIA_STATUS -eq 130 ]; then
-    echo "Aborted by user."
-    exit 130
-fi
-
-echo
 echo "===================================================="
-if [ $GLOBAL_STATUS -eq 0 ] && [ $INDIA_STATUS -eq 0 ]; then
-    echo "🎉 SUCCESS: Both charts synchronized successfully!"
+if [ ${#FAILED_CHARTS[@]} -eq 0 ]; then
+    echo "🎉 SUCCESS: All requested charts synchronized successfully!"
     EXIT_CODE=0
 else
-    echo "❌ ERROR: One or more sync operations failed."
+    echo "❌ ERROR: Failed to synchronize charts: ${FAILED_CHARTS[*]}"
     EXIT_CODE=1
 fi
 echo "===================================================="

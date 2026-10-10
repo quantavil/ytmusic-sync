@@ -3,10 +3,48 @@ import time
 import unicodedata
 from rapidfuzz import fuzz
 
-# Supported countries (Global and India only)
+# Supported charts and countries
 COUNTRIES = {
-    "global": {"name": "Global", "slug": "global_weekly"},
-    "in": {"name": "India", "slug": "in_weekly"}
+    "global": {
+        "name": "Global",
+        "slug": "global_weekly",
+        "url": "https://kworb.net/spotify/country/global_weekly.html",
+        "limit": 200,
+        "playlist_title": "Spotify Weekly Global Top 200",
+        "source": "spotify"
+    },
+    "in": {
+        "name": "India",
+        "slug": "in_weekly",
+        "url": "https://kworb.net/spotify/country/in_weekly.html",
+        "limit": 200,
+        "playlist_title": "Spotify Weekly India Top 200",
+        "source": "spotify"
+    },
+    "us": {
+        "name": "United States",
+        "slug": "us_weekly",
+        "url": "https://kworb.net/spotify/country/us_weekly.html",
+        "limit": 200,
+        "playlist_title": "Spotify Weekly United States Top 200",
+        "source": "spotify"
+    },
+    "radio": {
+        "name": "Radio Top 100",
+        "slug": "radio",
+        "url": "https://kworb.net/radio/",
+        "limit": 100,
+        "playlist_title": "Billboard Radio Songs Top 100",
+        "source": "radio"
+    },
+    "apple_songs": {
+        "name": "Apple Music Worldwide",
+        "slug": "apple_songs",
+        "url": "https://kworb.net/apple_songs/",
+        "limit": 200,
+        "playlist_title": "Apple Music Top 200 - Worldwide",
+        "source": "apple_songs"
+    }
 }
 
 BASE_URL = "https://kworb.net/spotify/country"
