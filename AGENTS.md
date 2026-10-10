@@ -7,7 +7,8 @@ A standalone Python utility that scrapes Spotify Weekly charts directly from Kwo
 ytmusic-sync/
 ├── .github/
 │   └── workflows/
-│       └── sync.yml   # GitHub Actions workflow for scheduled daily sync using uv
+│       ├── sync-global.yml   # Scheduled sync for Global chart (Sat, Mon)
+│       └── sync-india.yml    # Scheduled sync for India chart (Sun, Tue)
 ├── data/              # Cached country charts and resolved ytMusicId entries
 ├── utils.py                  # Common constants and shared generic utilities
 ├── scraper.py                # Parsing and HTML scraping logic for Kworb weekly charts

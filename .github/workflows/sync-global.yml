@@ -1,13 +1,13 @@
-name: Sync Spotify Charts to YouTube Music
+name: Sync Spotify Charts (Global)
 
 on:
   schedule:
-    # Run daily at 07:30 UTC (1:00 PM IST)
-    - cron: '30 7 * * *'
+    # Run at 07:30 UTC (1:00 PM IST) on Saturday and Monday (Kworb chart drop + backup)
+    - cron: '30 7 * * 6,1'
   workflow_dispatch: # Allows manual trigger
 
 concurrency:
-  group: ytmusic-sync
+  group: ytmusic-sync-global
   cancel-in-progress: false
 
 jobs:
@@ -51,10 +51,6 @@ jobs:
       - name: Run Sync (Global)
         run: |
           python sync.py --country global
-
-      - name: Run Sync (India)
-        run: |
-          python sync.py --country in
 
       - name: Save resolved track cache
         uses: actions/cache/save@v4
