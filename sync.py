@@ -195,10 +195,11 @@ def main():
         import sys
         sys.exit(1)
     except QuotaExceededError as e:
-        print(f"\n❌ Quota Exceeded: {e}")
-        print("The synchronization aborted because the Google YouTube Data API quota was exhausted.")
+        print(f"\n⚠️ Daily Quota Limit Reached: {e}")
+        print("::warning::Daily YouTube Data API quota reached (10,000 units). Partial progress safely saved to cache; remaining tracks will sync on the next scheduled run.")
+        print("ℹ️ The synchronization paused cleanly because the daily YouTube Data API budget was reached.")
         import sys
-        sys.exit(1)
+        sys.exit(0)
     except Exception as e:
         print(f"\n❌ Unexpected Error: {e}")
         import sys

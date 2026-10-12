@@ -2,8 +2,8 @@ name: Sync Charts (Worldwide Apple Music)
 
 on:
   schedule:
-    # Run at 07:30 UTC (1:00 PM IST) on Wednesday (dedicated quota day)
-    - cron: '30 7 * * 3'
+    # Run at 07:30 UTC (1:00 PM IST) on Wednesday and Friday (initial sync + resume backup)
+    - cron: '30 7 * * 3,5'
   workflow_dispatch: # Allows manual trigger
 
 concurrency:
