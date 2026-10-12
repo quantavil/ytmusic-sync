@@ -19,7 +19,7 @@ Click below to open and listen directly to the live synchronized playlists:
 | :--- | :--- | :--- | :--- |
 | 🌍 **Global** | **Spotify Weekly Global Top 200** | [▶️ **Listen on YouTube Music**](https://music.youtube.com/playlist?list=PLN7oNg7bR2bo) <br><sub>[Standard YouTube Link](https://www.youtube.com/playlist?list=PLN7oNg7bR2bo)</sub> | **Saturday** ([`sync-global.yml`](.github/workflows/sync-global.yml)) |
 | 🇮🇳 **India** | **Spotify Weekly India Top 200** | [▶️ **Listen on YouTube Music**](https://music.youtube.com/playlist?list=PLZKHuuLG3Vpo) <br><sub>[Standard YouTube Link](https://www.youtube.com/playlist?list=PLZKHuuLG3Vpo)</sub> | **Sunday** ([`sync-india.yml`](.github/workflows/sync-india.yml)) |
-| 🇺🇸 **United States** | **Spotify Weekly United States Top 200** | *Auto-created on first sync* | **Monday & Thursday** ([`sync-us.yml`](.github/workflows/sync-us.yml)) |
+| 🇺🇸 **United States** | **Spotify Weekly United States Top 200** | [▶️ **Listen on YouTube Music**](https://music.youtube.com/playlist?list=PLYZRlkPKJf0o) <br><sub>[Standard YouTube Link](https://www.youtube.com/playlist?list=PLYZRlkPKJf0o)</sub> | **Monday & Thursday** ([`sync-us.yml`](.github/workflows/sync-us.yml)) |
 | 📻 **Radio** | **Billboard Radio Songs Top 100** | *Auto-created on first sync* | **Tuesday** ([`sync-radio.yml`](.github/workflows/sync-radio.yml)) |
 | 🍎 **Apple Music** | **Apple Music Top 200 - Worldwide** | *Auto-created on first sync* | **Wednesday & Friday** ([`sync-apple.yml`](.github/workflows/sync-apple.yml)) |
 
